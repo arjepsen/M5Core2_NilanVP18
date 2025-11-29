@@ -1,0 +1,16 @@
+#ifndef NILAN_COMS_H
+#define NILAN_COMS_H
+
+typedef enum {
+    NILAN_REGID_VERSION_1 = 0,
+    NILAN_REGID_VERSION_2,
+    NILAN_REGID_VERSION_3,
+    NILAN_REGID_TANK_TOP,     // 211
+    NILAN_REGID_TANK_BOTTOM,  // 212
+    NILAN_REGID_ROOM_T15,     // 215
+    NILAN_REGID_CONTROL_STATE,// 1002
+    // ...
+    NILAN_REGID_COUNT
+} nilan_reg_id_t;
+
+#endif /* NILAN_COMS_H */

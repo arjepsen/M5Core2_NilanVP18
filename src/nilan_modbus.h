@@ -14,7 +14,8 @@ typedef enum {
     NILAN_MB_ERR_LENGTH,
     NILAN_MB_ERR_ADDR,
     NILAN_MB_ERR_FUNC,
-    NILAN_MB_ERR_EXCEPTION
+    NILAN_MB_ERR_EXCEPTION,
+    NILAN_MB_ERR_INTERNAL
 } nilan_mb_err_t;
 
 // Start Nilan Modbus RTU master.
@@ -34,6 +35,26 @@ uint32_t       nilan_modbus_get_fail_count(void);
 nilan_mb_err_t nilan_modbus_get_last_error(void);
 // Seconds since last successful poll; -1.0f if never
 float          nilan_modbus_get_secs_since_last_ok(void);
+
+// -------- Generic, optimized access ----------
+
+// Read "qty" input registers (function 0x04) starting at "start_reg".
+// Returns true on success; false on any error (details in *err_out if non-NULL).
+bool nilan_modbus_read_input_block(uint16_t start_reg,
+                                   uint16_t qty,
+                                   uint16_t *out_regs,
+                                   nilan_mb_err_t *err_out);
+
+// Read "qty" holding registers (function 0x03) starting at "start_reg".
+bool nilan_modbus_read_holding_block(uint16_t start_reg,
+                                     uint16_t qty,
+                                     uint16_t *out_regs,
+                                     nilan_mb_err_t *err_out);
+
+// Write single holding register (function 0x06).
+bool nilan_modbus_write_single_holding(uint16_t reg,
+                                       uint16_t value,
+                                       nilan_mb_err_t *err_out);
 
 #ifdef __cplusplus
 }

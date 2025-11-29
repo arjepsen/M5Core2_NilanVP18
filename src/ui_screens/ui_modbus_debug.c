@@ -1,138 +1,268 @@
 #include "ui_modbus_debug.h"
-
 #include "lvgl.h"
 #include "nilan_modbus.h"
 
-#include <inttypes.h>
+typedef enum {
+    REG_FMT_TEMP_CENTI_S16 = 0,  // signed, in 0.01 °C
+    REG_FMT_UINT16,              // generic unsigned
+    REG_FMT_INT16               // generic signed
+} reg_fmt_t;
 
-static lv_obj_t *s_lbl_title    = NULL;
-static lv_obj_t *s_lbl_status   = NULL;
-static lv_obj_t *s_lbl_top      = NULL;
-static lv_obj_t *s_lbl_bottom   = NULL;
-static lv_obj_t *s_lbl_counts   = NULL;
-static lv_obj_t *s_lbl_last_ok  = NULL;
-static lv_obj_t *s_lbl_last_err = NULL;
+typedef struct {
+    const char *name;
+    uint16_t    addr;
+    uint8_t     func;   // 3 = holding, 4 = input
+    uint8_t     count;  // number of registers (1..2 for now)
+    reg_fmt_t   fmt;
+} reg_desc_t;
 
-static const char *err_to_text(nilan_mb_err_t err)
+// Minimal initial catalog (you can extend this later)
+static const reg_desc_t s_reg_table[] = {
+    // name          addr  func  count  fmt
+    { "Version (1..3)",  1,   4,    3,  REG_FMT_UINT16 },          // Input regs 1-3
+    { "Room temp T15",   215, 4,    1,  REG_FMT_TEMP_CENTI_S16 },  // Input.T15 (x100°C)
+    { "Tank top T11",    211, 4,    1,  REG_FMT_TEMP_CENTI_S16 },  // Input.T11
+    { "Tank bottom T12", 212, 4,    1,  REG_FMT_TEMP_CENTI_S16 },  // Input.T12
+    { "Control.State",   1002, 4,   1,  REG_FMT_UINT16 },          // Input.Control.State
+};
+
+static const int s_reg_count = (int)(sizeof(s_reg_table)/sizeof(s_reg_table[0]));
+
+// UI elements
+static lv_obj_t *s_lbl_status   = NULL;  // top status bar
+static lv_obj_t *s_lbl_selected = NULL;  // selected register
+static lv_obj_t *s_lbl_value    = NULL;  // last read value
+static lv_obj_t *s_btn_read     = NULL;
+static lv_obj_t *s_btn_select   = NULL;
+
+// Modal list overlay
+static lv_obj_t *s_overlay      = NULL;
+
+static int       s_current_index = 0;
+
+// ---------- Helpers ----------
+
+static void format_value(char *buf,
+                         size_t buf_size,
+                         const reg_desc_t *desc,
+                         const uint16_t *raw_regs,
+                         int raw_count)
 {
-    switch (err) {
-    case NILAN_MB_ERR_NONE:      return "none";
-    case NILAN_MB_ERR_TIMEOUT:   return "timeout";
-    case NILAN_MB_ERR_CRC:       return "crc_fail";
-    case NILAN_MB_ERR_LENGTH:    return "length";
-    case NILAN_MB_ERR_ADDR:      return "addr_mismatch";
-    case NILAN_MB_ERR_FUNC:      return "bad_func";
-    case NILAN_MB_ERR_EXCEPTION: return "exception";
-    default:                     return "unknown";
-    }
-}
-
-static void dbg_update_timer_cb(lv_timer_t *timer)
-{
-    (void)timer;
-
-    if (!s_lbl_status || !s_lbl_top || !s_lbl_bottom ||
-        !s_lbl_counts || !s_lbl_last_ok || !s_lbl_last_err) {
+    if (!desc || !raw_regs || raw_count <= 0 || buf_size == 0) {
+        if (buf_size > 0) buf[0] = '\0';
         return;
     }
 
-    const bool          online        = nilan_modbus_is_online();
-    const int16_t       top_cC        = nilan_get_tank_top_cC();
-    const int16_t       bot_cC        = nilan_get_tank_bottom_cC();
-    const uint32_t      ok_count      = nilan_modbus_get_ok_count();
-    const uint32_t      fail_count    = nilan_modbus_get_fail_count();
-    const float         secs_since_ok = nilan_modbus_get_secs_since_last_ok();
-    const nilan_mb_err_t last_err     = nilan_modbus_get_last_error();
-
-    // Status label
-    if (online) {
-        lv_label_set_text(s_lbl_status, "Status: ONLINE");
-        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0x00FF00), 0);
-    } else {
-        lv_label_set_text(s_lbl_status, "Status: OFFLINE");
-        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF0000), 0);
+    switch (desc->fmt) {
+    case REG_FMT_TEMP_CENTI_S16: {
+        int16_t v = (int16_t)raw_regs[0];
+        int whole = v / 100;
+        int frac  = v % 100;
+        if (frac < 0) frac = -frac;
+        lv_snprintf(buf, buf_size, "%d.%02d C", whole, frac);
+        break;
     }
-
-    // Temperatures
-    if (secs_since_ok < 0.0f) {
-        lv_label_set_text(s_lbl_top,    "Tank top: --.- C");
-        lv_label_set_text(s_lbl_bottom, "Tank bottom: --.- C");
-    } else {
-        lv_label_set_text_fmt(s_lbl_top,
-                              "Tank top: %.1f C",
-                              (double)top_cC / 100.0);
-        lv_label_set_text_fmt(s_lbl_bottom,
-                              "Tank bottom: %.1f C",
-                              (double)bot_cC / 100.0);
+    case REG_FMT_UINT16: {
+        if (raw_count == 1) {
+            lv_snprintf(buf, buf_size, "%u", (unsigned)raw_regs[0]);
+        } else if (raw_count == 2) {
+            // Simple "hi:lo" representation
+            lv_snprintf(buf, buf_size, "%u / %u",
+                        (unsigned)raw_regs[0],
+                        (unsigned)raw_regs[1]);
+        } else {
+            lv_snprintf(buf, buf_size, "%u (n=%d)",
+                        (unsigned)raw_regs[0], raw_count);
+        }
+        break;
     }
-
-    // OK / fail counters
-    lv_label_set_text_fmt(s_lbl_counts,
-                          "OK:%" PRIu32 "  Fail:%" PRIu32,
-                          ok_count, fail_count);
-
-    // Last OK
-    if (secs_since_ok < 0.0f) {
-        lv_label_set_text(s_lbl_last_ok, "Last OK: never");
-    } else {
-        lv_label_set_text_fmt(s_lbl_last_ok,
-                              "Last OK: %.1f s ago",
-                              (double)secs_since_ok);
+    case REG_FMT_INT16: {
+        int16_t v = (int16_t)raw_regs[0];
+        lv_snprintf(buf, buf_size, "%d", (int)v);
+        break;
     }
-
-    // Last error
-    lv_label_set_text_fmt(s_lbl_last_err,
-                          "Last error: %s",
-                          err_to_text(last_err));
+    default:
+        lv_snprintf(buf, buf_size, "n/a");
+        break;
+    }
 }
+
+static void update_selected_label(void)
+{
+    if (!s_lbl_selected) return;
+
+    const reg_desc_t *d = &s_reg_table[s_current_index];
+    lv_label_set_text_fmt(s_lbl_selected,
+                          "Selected: %s (addr %u, func 0x%02X, count %u)",
+                          d->name,
+                          (unsigned)d->addr,
+                          (unsigned)d->func,
+                          (unsigned)d->count);
+}
+
+// ---------- Status timer ----------
+
+static void dbg_status_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (!s_lbl_status) return;
+
+    bool online = nilan_modbus_is_online();
+
+    if (online) {
+        float age = nilan_modbus_get_secs_since_last_ok();
+        lv_label_set_text_fmt(s_lbl_status,
+                              "Status: ONLINE (last OK %.1fs ago)",
+                              (double)age);
+    } else {
+        lv_label_set_text(s_lbl_status, "Status: offline");
+    }
+}
+
+// ---------- Modal list handling ----------
+
+static void overlay_close(void)
+{
+    if (s_overlay) {
+        lv_obj_del(s_overlay);
+        s_overlay = NULL;
+    }
+}
+
+static void reg_list_item_event_cb(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_target(e);
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+
+    s_current_index = idx;
+    update_selected_label();
+
+    // Also clear the last value (forces a new read)
+    if (s_lbl_value) {
+        lv_label_set_text(s_lbl_value, "Value: (not read yet)");
+    }
+
+    (void)btn;
+    overlay_close();
+}
+
+static void select_btn_event_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_overlay) {
+        // Already open; do nothing
+        return;
+    }
+
+    // parent is the tile; grab it from button
+    lv_obj_t *tile = lv_obj_get_parent(s_btn_select);
+    s_overlay = lv_obj_create(tile);
+    lv_obj_set_size(s_overlay, 320, 240);
+    lv_obj_set_style_bg_color(s_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_overlay, LV_OPA_60, 0);
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Simple list in the center
+    lv_obj_t *list = lv_list_create(s_overlay);
+    lv_obj_set_size(list, 280, 180);
+    lv_obj_center(list);
+
+    for (int i = 0; i < s_reg_count; ++i) {
+        const reg_desc_t *d = &s_reg_table[i];
+        lv_obj_t *btn = lv_list_add_btn(list, NULL, d->name);
+        lv_obj_add_event_cb(btn,
+                            reg_list_item_event_cb,
+                            LV_EVENT_CLICKED,
+                            (void *)(intptr_t)i);
+    }
+
+    // If you tap outside the list, close overlay
+    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_overlay, (void (*)(lv_event_t *))overlay_close, LV_EVENT_CLICKED, NULL);
+}
+
+// ---------- Read button ----------
+
+static void read_btn_event_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_lbl_value) return;
+
+    const reg_desc_t *d = &s_reg_table[s_current_index];
+
+    uint16_t raw[4] = {0};
+    nilan_mb_err_t err = NILAN_MB_ERR_NONE;
+    bool ok = false;
+
+    if (d->func == 4) {
+        ok = nilan_modbus_read_input_block(d->addr, d->count, raw, &err);
+    } else if (d->func == 3) {
+        ok = nilan_modbus_read_holding_block(d->addr, d->count, raw, &err);
+    } else {
+        ok = false;
+        err = NILAN_MB_ERR_FUNC;
+    }
+
+    if (!ok) {
+        lv_label_set_text_fmt(s_lbl_value,
+                              "Value: ERROR (mb_err=%d)",
+                              (int)err);
+        return;
+    }
+
+    char buf[64];
+    format_value(buf, sizeof(buf), d, raw, d->count);
+    lv_label_set_text_fmt(s_lbl_value, "Value: %s", buf);
+}
+
+// ---------- Screen creation ----------
 
 void ui_modbus_debug_create(lv_obj_t *tile)
 {
-    lv_obj_set_style_bg_color(tile, lv_color_hex(0x000000), 0);
+    // Background
+    lv_obj_set_style_bg_color(tile, lv_color_hex(0x202020), 0);
     lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Title
-    s_lbl_title = lv_label_create(tile);
-    lv_label_set_text(s_lbl_title, "Nilan / Modbus debug");
-    lv_obj_set_style_text_color(s_lbl_title, lv_color_hex(0xFFFF00), 0);
-    lv_obj_align(s_lbl_title, LV_ALIGN_TOP_MID, 0, 6);
-
-    // Status
+    // Top status bar
     s_lbl_status = lv_label_create(tile);
-    lv_label_set_text(s_lbl_status, "Status: --");
+    lv_label_set_text(s_lbl_status, "Status: ---");
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(s_lbl_status, LV_ALIGN_TOP_LEFT, 8, 28);
+    lv_obj_align(s_lbl_status, LV_ALIGN_TOP_LEFT, 6, 4);
 
-    // Tank top
-    s_lbl_top = lv_label_create(tile);
-    lv_label_set_text(s_lbl_top, "Tank top: --.- C");
-    lv_obj_set_style_text_color(s_lbl_top, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(s_lbl_top, LV_ALIGN_TOP_LEFT, 8, 52);
+    // Selected register label
+    s_lbl_selected = lv_label_create(tile);
+    lv_label_set_text(s_lbl_selected, "Selected: (none)");
+    lv_obj_set_style_text_color(s_lbl_selected, lv_color_hex(0xC0C0C0), 0);
+    lv_obj_align(s_lbl_selected, LV_ALIGN_TOP_LEFT, 6, 26);
 
-    // Tank bottom
-    s_lbl_bottom = lv_label_create(tile);
-    lv_label_set_text(s_lbl_bottom, "Tank bottom: --.- C");
-    lv_obj_set_style_text_color(s_lbl_bottom, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(s_lbl_bottom, LV_ALIGN_TOP_LEFT, 8, 74);
+    // Buttons
+    s_btn_select = lv_btn_create(tile);
+    lv_obj_set_size(s_btn_select, 120, 32);
+    lv_obj_align(s_btn_select, LV_ALIGN_TOP_LEFT, 6, 54);
+    lv_obj_t *lbl_sel = lv_label_create(s_btn_select);
+    lv_label_set_text(lbl_sel, "Select register");
+    lv_obj_center(lbl_sel);
+    lv_obj_add_event_cb(s_btn_select, select_btn_event_cb, LV_EVENT_CLICKED, NULL);
 
-    // OK / fail counters
-    s_lbl_counts = lv_label_create(tile);
-    lv_label_set_text(s_lbl_counts, "OK:0  Fail:0");
-    lv_obj_set_style_text_color(s_lbl_counts, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(s_lbl_counts, LV_ALIGN_TOP_LEFT, 8, 100);
+    s_btn_read = lv_btn_create(tile);
+    lv_obj_set_size(s_btn_read, 80, 32);
+    lv_obj_align(s_btn_read, LV_ALIGN_TOP_RIGHT, -6, 54);
+    lv_obj_t *lbl_read = lv_label_create(s_btn_read);
+    lv_label_set_text(lbl_read, "Read");
+    lv_obj_center(lbl_read);
+    lv_obj_add_event_cb(s_btn_read, read_btn_event_cb, LV_EVENT_CLICKED, NULL);
 
-    // Last OK
-    s_lbl_last_ok = lv_label_create(tile);
-    lv_label_set_text(s_lbl_last_ok, "Last OK: --");
-    lv_obj_set_style_text_color(s_lbl_last_ok, lv_color_hex(0xC0C0C0), 0);
-    lv_obj_align(s_lbl_last_ok, LV_ALIGN_TOP_LEFT, 8, 122);
+    // Value label
+    s_lbl_value = lv_label_create(tile);
+    lv_label_set_text(s_lbl_value, "Value: (not read yet)");
+    lv_obj_set_style_text_color(s_lbl_value, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(s_lbl_value, LV_ALIGN_TOP_LEFT, 6, 94);
 
-    // Last error
-    s_lbl_last_err = lv_label_create(tile);
-    lv_label_set_text(s_lbl_last_err, "Last error: --");
-    lv_obj_set_style_text_color(s_lbl_last_err, lv_color_hex(0xC0C0C0), 0);
-    lv_obj_align(s_lbl_last_err, LV_ALIGN_TOP_LEFT, 8, 144);
+    // Initialize selected label
+    s_current_index = 0;
+    update_selected_label();
 
-    // Periodic update timer (500 ms)
-    lv_timer_create(dbg_update_timer_cb, 500, NULL);
+    // Periodic status update timer (500 ms, only uses cached data)
+    lv_timer_create(dbg_status_timer_cb, 500, NULL);
 }
