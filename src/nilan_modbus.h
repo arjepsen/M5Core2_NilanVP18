@@ -38,23 +38,18 @@ float          nilan_modbus_get_secs_since_last_ok(void);
 
 // -------- Generic, optimized access ----------
 
+bool nilan_read_regs(uint8_t func, uint16_t start, uint16_t qty, uint16_t *regs);
+
 // Read "qty" input registers (function 0x04) starting at "start_reg".
 // Returns true on success; false on any error (details in *err_out if non-NULL).
-bool nilan_modbus_read_input_block(uint16_t start_reg,
-                                   uint16_t qty,
-                                   uint16_t *out_regs,
-                                   nilan_mb_err_t *err_out);
+//bool nilan_modbus_read_input_block(uint16_t start_reg, uint16_t qty, uint16_t *out_regs);
 
 // Read "qty" holding registers (function 0x03) starting at "start_reg".
-bool nilan_modbus_read_holding_block(uint16_t start_reg,
-                                     uint16_t qty,
-                                     uint16_t *out_regs,
-                                     nilan_mb_err_t *err_out);
+//bool nilan_modbus_read_holding_block(uint16_t start_reg, uint16_t qty, uint16_t *out_regs);
 
-// Write single holding register (function 0x06).
-bool nilan_modbus_write_single_holding(uint16_t reg,
-                                       uint16_t value,
-                                       nilan_mb_err_t *err_out);
+// // Write single holding register (function 0x06).
+// bool nilan_modbus_write_single_holding(uint16_t reg,
+//                                        uint16_t value);
 
 #ifdef __cplusplus
 }

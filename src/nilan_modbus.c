@@ -3,15 +3,17 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
-#include "esp_log.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 
-#include "driver/uart.h"
 #include "driver/gpio.h"
+#include "driver/uart.h"
+
+#include "CRC16.h"
 
 static const char *TAG = "nilan_modbus";
 
@@ -29,94 +31,62 @@ static const char *TAG = "nilan_modbus";
 // So here:
 //   TX = GPIO32, RX = GPIO33 on UART1
 //
-#define NILAN_UART_PORT          UART_NUM_1
-#define NILAN_UART_TX_GPIO       GPIO_NUM_32
-#define NILAN_UART_RX_GPIO       GPIO_NUM_33
-#define NILAN_UART_BAUDRATE      19200
-#define NILAN_UART_BUF_SIZE      256
+#define NILAN_UART_PORT UART_NUM_1
+#define NILAN_UART_TX_GPIO GPIO_NUM_32
+#define NILAN_UART_RX_GPIO GPIO_NUM_33
+#define NILAN_UART_BAUDRATE 19200
+#define NILAN_UART_BUF_SIZE 256
 
 // Nilan defaults
-#define NILAN_SLAVE_ADDR         30           // CTS 602 default Modbus address
+#define NILAN_SLAVE_ADDR 30 // CTS 602 default Modbus address
 
 // Background poll: tank top/bottom (input registers 211 / 212)
-#define NILAN_REG_TANK_TOP       211
-#define NILAN_POLL_INTERVAL_MS   3000         // ~3 s, as discussed
-#define NILAN_OFFLINE_TIMEOUT_MS 10000        // 10 s without OK => OFFLINE
+#define NILAN_REG_TANK_TOP 211
+#define NILAN_POLL_INTERVAL_MS 3000    // ~3 s, as discussed
+#define NILAN_OFFLINE_TIMEOUT_MS 10000 // 10 s without OK => OFFLINE
 
 // ---------------- Internal state ----------------
 
-static bool           s_started       = false;
-static TaskHandle_t   s_poll_task     = NULL;
+static bool s_started = false;
+static TaskHandle_t s_poll_task = NULL;
 
 // UART mutex to serialize all Modbus transactions
 static SemaphoreHandle_t s_uart_mutex = NULL;
 
 // Latest cached temperatures (centi-degC, signed)
-static int16_t        s_tank_top_cC   = 0;
-static int16_t        s_tank_bot_cC   = 0;
+static int16_t s_tank_top_cC = 0;
+static int16_t s_tank_bot_cC = 0;
 
 // Online / stats
-static uint32_t       s_ok_count      = 0;
-static uint32_t       s_fail_count    = 0;
-static uint32_t       s_last_ok_ms    = 0;      // 0 = never
-static nilan_mb_err_t s_last_err      = NILAN_MB_ERR_NONE;
+static uint32_t s_ok_count = 0;
+static uint32_t s_fail_count = 0;
+static uint32_t s_last_ok_ms = 0; // 0 = never
+static nilan_mb_err_t s_last_err = NILAN_MB_ERR_NONE;
 
-// ---------------- Helpers ----------------
 
-static uint32_t get_time_ms(void)
+
+
+// ====================================================
+// PROTOTYPES
+// ====================================================
+static inline uint32_t get_time_ms();
+
+
+// ====================================================
+// IMPLEMENTATIONS
+// ====================================================
+
+
+
+bool nilan_read_regs(uint8_t func, uint16_t start, uint16_t qty, uint16_t *regs)
 {
-    int64_t us = esp_timer_get_time(); // microseconds since boot
-    return (uint32_t)(us / 1000);      // wrap is fine (49+ days)
-}
-
-// Standard Modbus RTU CRC16 (poly 0xA001, init 0xFFFF, little-endian)
-static uint16_t modbus_crc16(const uint8_t *data, uint16_t len)
-{
-    uint16_t crc = 0xFFFF;
-
-    for (uint16_t i = 0; i < len; ++i) {
-        crc ^= (uint16_t)data[i];
-        for (int bit = 0; bit < 8; ++bit) {
-            if (crc & 0x0001) {
-                crc >>= 1;
-                crc ^= 0xA001;
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    return crc;
-}
-
-// Low-level: generic read for function 0x03 or 0x04.
-// NOTE: This assumes we already hold s_uart_mutex.
-static esp_err_t nilan_read_regs(uint8_t func,
-                                 uint16_t start,
-                                 uint16_t qty,
-                                 uint16_t *regs,
-                                 nilan_mb_err_t *err_out)
-{
-    if (err_out) {
-        *err_out = NILAN_MB_ERR_NONE;
-    }
-
-    if (qty == 0 || qty > 32 || regs == NULL) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_LENGTH;
-        }
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (func != 0x03 && func != 0x04) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_FUNC;
-        }
-        return ESP_ERR_INVALID_ARG;
-    }
+    bool crc_ok = false;
 
     // Build request: [addr][func][start_hi][start_lo][qty_hi][qty_lo][crc_lo][crc_hi]
-    uint8_t tx[8];
-    tx[0] = (uint8_t)NILAN_SLAVE_ADDR;
+    const size_t TX_BYTE_COUNT = 8;
+
+    uint8_t tx[TX_BYTE_COUNT];
+    tx[0] = (uint8_t)NILAN_SLAVE_ADDR;  // 0x30
     tx[1] = func;
     tx[2] = (uint8_t)(start >> 8);
     tx[3] = (uint8_t)(start & 0xFF);
@@ -127,180 +97,78 @@ static esp_err_t nilan_read_regs(uint8_t func,
     tx[6] = (uint8_t)(crc & 0xFF);        // CRC low
     tx[7] = (uint8_t)((crc >> 8) & 0xFF); // CRC high
 
-    // Clear any stale data and send request
-    (void)uart_flush_input(NILAN_UART_PORT);
-    int written = uart_write_bytes(NILAN_UART_PORT, (const char *)tx, sizeof(tx));
-    if (written != (int)sizeof(tx)) {
-        ESP_LOGW(TAG, "UART write short: %d / %d", written, (int)sizeof(tx));
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_INTERNAL;
-        }
-        return ESP_FAIL;
-    }
-
-    // Expected normal response length:
-    // [addr][func][byte_count][data...][crc_lo][crc_hi]
-    const int expected_len = 3 + (qty * 2) + 2;
-    if (expected_len > NILAN_UART_BUF_SIZE) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_LENGTH;
-        }
-        return ESP_ERR_NO_MEM;
-    }
+    // Expected normal response length:  [addr][func][byte_count][data...][crc_lo][crc_hi]
+    const int EXPECTED_RESPONSE_LENGTH = 5 + (qty * 2);
+    int response_length = 0;
 
     uint8_t rx[NILAN_UART_BUF_SIZE];
-    memset(rx, 0, sizeof(rx));
 
-    int len = uart_read_bytes(NILAN_UART_PORT,
-                              rx,
-                              expected_len,
-                              pdMS_TO_TICKS(500)); // 500 ms timeout
+    if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+    {
+        // Clear any stale data and send request
+        uart_flush_input(NILAN_UART_PORT);
 
-    if (len <= 0) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_TIMEOUT;
+        // Send data.
+        uart_write_bytes(NILAN_UART_PORT, (const char *)tx, TX_BYTE_COUNT);
+
+        response_length = uart_read_bytes(NILAN_UART_PORT, rx, EXPECTED_RESPONSE_LENGTH, pdMS_TO_TICKS(500)); // 500 ms timeout
+
+        xSemaphoreGive(s_uart_mutex);
+    }
+
+    if (response_length == EXPECTED_RESPONSE_LENGTH)
+    {
+        // Verify CRC on full frame minus last 2 bytes
+        uint16_t rx_crc = (uint16_t)rx[response_length - 2] | ((uint16_t)rx[response_length - 1] << 8);
+        uint16_t calc_crc = modbus_crc16(rx, (uint16_t)(response_length - 2));
+
+        crc_ok = rx_crc == calc_crc;
+
+        // Extract registers
+        for (uint16_t i = 0; i < qty; ++i)
+        {
+            uint16_t hi = rx[3 + (i * 2)];
+            uint16_t lo = rx[3 + (i * 2) + 1];
+            regs[i] = (uint16_t)((hi << 8) | lo);
         }
-        return ESP_ERR_TIMEOUT;
     }
 
-    // Minimal frame is 5 bytes: addr, func, byte_count/exception, crc_lo, crc_hi
-    if (len < 5) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_LENGTH;
-        }
-        return ESP_FAIL;
-    }
-
-    uint8_t addr  = rx[0];
-    uint8_t rfunc = rx[1];
-    uint8_t bcnt  = rx[2];
-
-    // Check address
-    if (addr != (uint8_t)NILAN_SLAVE_ADDR) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_ADDR;
-        }
-        return ESP_FAIL;
-    }
-
-    // Exception frame: function | 0x80, then exception code
-    if (rfunc & 0x80) {
-        uint8_t ex_code = (len >= 4) ? rx[2] : 0xFF;
-        ESP_LOGW(TAG, "Modbus exception: func=0x%02X code=0x%02X", rfunc, ex_code);
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_EXCEPTION;
-        }
-        return ESP_FAIL;
-    }
-
-    // Must match requested function
-    if (rfunc != func) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_FUNC;
-        }
-        return ESP_FAIL;
-    }
-
-    // Check byte count
-    if (bcnt != (uint8_t)(qty * 2)) {
-        ESP_LOGW(TAG, "Modbus bad byte count: got %u expected %u",
-                 (unsigned)bcnt, (unsigned)(qty * 2));
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_LENGTH;
-        }
-        return ESP_FAIL;
-    }
-
-    // Check total length (3 header + data + 2 crc)
-    if (len != (3 + bcnt + 2)) {
-        ESP_LOGW(TAG, "Modbus bad length: got %d expected %d",
-                 len, 3 + bcnt + 2);
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_LENGTH;
-        }
-        return ESP_FAIL;
-    }
-
-    // Verify CRC on full frame minus last 2 bytes
-    uint16_t rx_crc   = (uint16_t)rx[len - 2] | ((uint16_t)rx[len - 1] << 8);
-    uint16_t calc_crc = modbus_crc16(rx, (uint16_t)(len - 2));
-    if (rx_crc != calc_crc) {
-        ESP_LOGW(TAG, "Modbus CRC mismatch: rx=0x%04X calc=0x%04X",
-                 rx_crc, calc_crc);
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_CRC;
-        }
-        return ESP_FAIL;
-    }
-
-    // Extract registers
-    for (uint16_t i = 0; i < qty; ++i) {
-        uint16_t hi = rx[3 + (i * 2)];
-        uint16_t lo = rx[3 + (i * 2) + 1];
-        regs[i] = (uint16_t)((hi << 8) | lo);
-    }
-
-    return ESP_OK;
+    return crc_ok;
 }
 
-// Low-level: write single holding register (0x06). Assumes we hold mutex.
-static esp_err_t nilan_write_single_reg(uint16_t reg,
-                                        uint16_t value,
-                                        nilan_mb_err_t *err_out)
-{
-    if (err_out) {
-        *err_out = NILAN_MB_ERR_NONE;
-    }
+// // Low-level: write single holding register (0x06). Assumes we hold mutex.
+// static esp_err_t nilan_write_single_reg(uint16_t reg, uint16_t value)
+// {
+//     const size_t BYTE_COUNT = 8;
 
-    uint8_t tx[8];
-    tx[0] = (uint8_t)NILAN_SLAVE_ADDR;
-    tx[1] = 0x06;                     // Write Single Register
-    tx[2] = (uint8_t)(reg >> 8);
-    tx[3] = (uint8_t)(reg & 0xFF);
-    tx[4] = (uint8_t)(value >> 8);
-    tx[5] = (uint8_t)(value & 0xFF);
+//     uint8_t tx[BYTE_COUNT];
+//     tx[0] = (uint8_t)NILAN_SLAVE_ADDR;
+//     tx[1] = 0x06; // Write Single Register
+//     tx[2] = (uint8_t)(reg >> 8);
+//     tx[3] = (uint8_t)(reg & 0xFF);
+//     tx[4] = (uint8_t)(value >> 8);
+//     tx[5] = (uint8_t)(value & 0xFF);
 
-    uint16_t crc = modbus_crc16(tx, 6);
-    tx[6] = (uint8_t)(crc & 0xFF);
-    tx[7] = (uint8_t)((crc >> 8) & 0xFF);
+//     uint16_t crc = modbus_crc16(tx, 6);
+//     tx[6] = (uint8_t)(crc & 0xFF);
+//     tx[7] = (uint8_t)((crc >> 8) & 0xFF);
 
-    (void)uart_flush_input(NILAN_UART_PORT);
-    int written = uart_write_bytes(NILAN_UART_PORT, (const char *)tx, sizeof(tx));
-    if (written != (int)sizeof(tx)) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_INTERNAL;
-        }
-        return ESP_FAIL;
-    }
+//     uart_flush_input(NILAN_UART_PORT);
+//     uart_write_bytes(NILAN_UART_PORT, (const char *)tx, BYTE_COUNT);
 
-    // Response is an exact echo of the request (addr, func, reg, value, crc)
-    uint8_t rx[8];
-    int len = uart_read_bytes(NILAN_UART_PORT, rx, sizeof(rx), pdMS_TO_TICKS(500));
-    if (len != 8) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_TIMEOUT;
-        }
-        return ESP_ERR_TIMEOUT;
-    }
+//     // Response is an exact echo of the request (addr, func, reg, value, crc)
+//     uint8_t rx[BYTE_COUNT];
+//     uart_read_bytes(NILAN_UART_PORT, rx, BYTE_COUNT, pdMS_TO_TICKS(500));
 
-    uint16_t rx_crc   = (uint16_t)rx[6] | ((uint16_t)rx[7] << 8);
-    uint16_t calc_crc = modbus_crc16(rx, 6);
-    if (rx_crc != calc_crc) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_CRC;
-        }
-        return ESP_FAIL;
-    }
+//     uint16_t rx_crc = (uint16_t)rx[6] | ((uint16_t)rx[7] << 8);
+//     uint16_t calc_crc = modbus_crc16(rx, 6);
+//     if (rx_crc != calc_crc)
+//     {
+//         return ESP_FAIL;
+//     }
 
-    if (rx[0] != (uint8_t)NILAN_SLAVE_ADDR || rx[1] != 0x06) {
-        if (err_out) {
-            *err_out = NILAN_MB_ERR_FUNC;
-        }
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
-}
+//     return ESP_OK;
+// }
 
 // ---------------- Polling task ----------------
 
@@ -310,37 +178,41 @@ static void nilan_poll_task(void *arg)
 
     uint16_t regs[2];
 
-    while (1) {
+    while (1)
+    {
         // Serialize with any UI-triggered Modbus call
-        if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+        {
             nilan_mb_err_t errcode = NILAN_MB_ERR_NONE;
-            esp_err_t err = nilan_read_regs(0x04,      // Input registers
+            esp_err_t err = nilan_read_regs(0x04, // Input registers
                                             NILAN_REG_TANK_TOP,
                                             2,
-                                            regs,
-                                            &errcode);
+                                            regs);
             xSemaphoreGive(s_uart_mutex);
 
             uint32_t now_ms = get_time_ms();
 
-            if (err == ESP_OK) {
+            if (err == ESP_OK)
+            {
                 // Docs: values are in 0.01 °C, signed
                 s_tank_top_cC = (int16_t)regs[0];
                 s_tank_bot_cC = (int16_t)regs[1];
 
                 s_ok_count++;
                 s_last_ok_ms = now_ms;
-                s_last_err   = NILAN_MB_ERR_NONE;
+                s_last_err = NILAN_MB_ERR_NONE;
 
-                ESP_LOGD(TAG, "Poll OK: top=%d cC, bot=%d cC",
-                         (int)s_tank_top_cC, (int)s_tank_bot_cC);
-            } else {
+                // ESP_LOGD(TAG, "Poll OK: top=%d cC, bot=%d cC", (int)s_tank_top_cC, (int)s_tank_bot_cC);
+            }
+            else
+            {
                 s_fail_count++;
                 s_last_err = errcode;
-                ESP_LOGW(TAG, "Poll failed: esp_err=0x%x, mb_err=%d",
-                         (unsigned)err, (int)errcode);
+                ESP_LOGW(TAG, "Poll failed\n");
             }
-        } else {
+        }
+        else
+        {
             // Could not get mutex; treat as "internal" failure
             s_fail_count++;
             s_last_err = NILAN_MB_ERR_INTERNAL;
@@ -354,42 +226,46 @@ static void nilan_poll_task(void *arg)
 
 bool nilan_modbus_start(void)
 {
-    if (s_started) {
+    if (s_started)
+    {
         return true;
     }
 
     // Mutex first
     s_uart_mutex = xSemaphoreCreateMutex();
-    if (!s_uart_mutex) {
-        ESP_LOGE(TAG, "Failed to create UART mutex");
-        return false;
-    }
+    // if (!s_uart_mutex)
+    // {
+    //     ESP_LOGE(TAG, "Failed to create UART mutex");
+    //     return false;
+    // }
 
     // Configure UART
     uart_config_t cfg = {
         .baud_rate = NILAN_UART_BAUDRATE,
         .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_EVEN,   // 8E1 matches Arduino SERIAL_8E1
+        .parity = UART_PARITY_EVEN, // 8E1 matches Arduino SERIAL_8E1
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_APB,
     };
 
-    ESP_ERROR_CHECK(uart_param_config(NILAN_UART_PORT, &cfg));
-    ESP_ERROR_CHECK(uart_set_pin(NILAN_UART_PORT,
-                                 NILAN_UART_TX_GPIO,
-                                 NILAN_UART_RX_GPIO,
-                                 UART_PIN_NO_CHANGE,
-                                 UART_PIN_NO_CHANGE));
-    ESP_ERROR_CHECK(uart_driver_install(NILAN_UART_PORT,
-                                        NILAN_UART_BUF_SIZE,
-                                        NILAN_UART_BUF_SIZE,
-                                        0,
-                                        NULL,
-                                        0));
+    uart_param_config(NILAN_UART_PORT, &cfg);
+    uart_set_pin(NILAN_UART_PORT,
+                 NILAN_UART_TX_GPIO,
+                 NILAN_UART_RX_GPIO,
+                 UART_PIN_NO_CHANGE,
+                 UART_PIN_NO_CHANGE);
+
+    uart_driver_install(NILAN_UART_PORT,
+                        NILAN_UART_BUF_SIZE,
+                        NILAN_UART_BUF_SIZE,
+                        0,
+                        NULL,
+                        0);
+
 
     // Create polling task
-    BaseType_t res = xTaskCreate(
+    xTaskCreate(
         nilan_poll_task,
         "nilan_poll",
         4096,
@@ -397,13 +273,8 @@ bool nilan_modbus_start(void)
         8,
         &s_poll_task);
 
-    if (res != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create poll task");
-        return false;
-    }
-
     s_started = true;
-    ESP_LOGI(TAG, "Nilan Modbus started (UART1 on GPIO32/33, 19200 8E1)");
+    //ESP_LOGI(TAG, "Nilan Modbus started (UART1 on GPIO32/33, 19200 8E1)");
     return true;
 }
 
@@ -411,7 +282,8 @@ bool nilan_modbus_start(void)
 bool nilan_modbus_is_online(void)
 {
     uint32_t last = s_last_ok_ms;
-    if (last == 0) {
+    if (last == 0)
+    {
         return false; // never seen a good frame
     }
 
@@ -448,7 +320,8 @@ nilan_mb_err_t nilan_modbus_get_last_error(void)
 
 float nilan_modbus_get_secs_since_last_ok(void)
 {
-    if (s_last_ok_ms == 0) {
+    if (s_last_ok_ms == 0)
+    {
         return -1.0f; // never
     }
     uint32_t now = get_time_ms();
@@ -458,67 +331,44 @@ float nilan_modbus_get_secs_since_last_ok(void)
 
 // --------- Generic access wrappers (public API) ----------
 
-bool nilan_modbus_read_input_block(uint16_t start_reg,
-                                   uint16_t qty,
-                                   uint16_t *out_regs,
-                                   nilan_mb_err_t *err_out)
+bool nilan_modbus_read_input_block(uint16_t start_reg, uint16_t qty, uint16_t *out_regs)
 {
-    if (!s_uart_mutex) {
-        if (err_out) *err_out = NILAN_MB_ERR_INTERNAL;
-        return false;
-    }
-
-    bool ok = false;
-    if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        esp_err_t err = nilan_read_regs(0x04, start_reg, qty, out_regs, err_out);
+    bool response = false;
+    if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+    {
+        response = nilan_read_regs(0x04, start_reg, qty, out_regs);
         xSemaphoreGive(s_uart_mutex);
-        ok = (err == ESP_OK);
-    } else {
-        if (err_out) *err_out = NILAN_MB_ERR_TIMEOUT;
-        ok = false;
     }
-    return ok;
+    return response;
 }
 
-bool nilan_modbus_read_holding_block(uint16_t start_reg,
-                                     uint16_t qty,
-                                     uint16_t *out_regs,
-                                     nilan_mb_err_t *err_out)
+bool nilan_modbus_read_holding_block(uint16_t start_reg, uint16_t qty, uint16_t *out_regs)
 {
-    if (!s_uart_mutex) {
-        if (err_out) *err_out = NILAN_MB_ERR_INTERNAL;
-        return false;
-    }
-
-    bool ok = false;
-    if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        esp_err_t err = nilan_read_regs(0x03, start_reg, qty, out_regs, err_out);
+    bool response = false;
+    if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+    {
+        response = nilan_read_regs(0x03, start_reg, qty, out_regs);
         xSemaphoreGive(s_uart_mutex);
-        ok = (err == ESP_OK);
-    } else {
-        if (err_out) *err_out = NILAN_MB_ERR_TIMEOUT;
-        ok = false;
     }
-    return ok;
+    return response;
 }
 
-bool nilan_modbus_write_single_holding(uint16_t reg,
-                                       uint16_t value,
-                                       nilan_mb_err_t *err_out)
-{
-    if (!s_uart_mutex) {
-        if (err_out) *err_out = NILAN_MB_ERR_INTERNAL;
-        return false;
-    }
+// bool nilan_modbus_write_single_holding(uint16_t reg,
+//                                        uint16_t value)
+// {
+//     if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+//     {
+//         nilan_write_single_reg(reg, value);
+//         xSemaphoreGive(s_uart_mutex);
+//     }
+// }
 
-    bool ok = false;
-    if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        esp_err_t err = nilan_write_single_reg(reg, value, err_out);
-        xSemaphoreGive(s_uart_mutex);
-        ok = (err == ESP_OK);
-    } else {
-        if (err_out) *err_out = NILAN_MB_ERR_TIMEOUT;
-        ok = false;
-    }
-    return ok;
+
+// ===============================================================
+// HELPERS
+// ===============================================================
+static inline uint32_t get_time_ms()
+{
+    // xTaskGetTickCount() is 32-bit, wraparound-safe.
+    return (uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
 }

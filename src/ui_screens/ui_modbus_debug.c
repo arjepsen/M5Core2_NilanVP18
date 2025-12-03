@@ -2,43 +2,45 @@
 #include "lvgl.h"
 #include "nilan_modbus.h"
 
-typedef enum {
-    REG_FMT_TEMP_CENTI_S16 = 0,  // signed, in 0.01 °C
-    REG_FMT_UINT16,              // generic unsigned
+typedef enum
+{
+    REG_FMT_TEMP_CENTI_S16 = 0, // signed, in 0.01 °C
+    REG_FMT_UINT16,             // generic unsigned
     REG_FMT_INT16               // generic signed
 } reg_fmt_t;
 
-typedef struct {
+typedef struct
+{
     const char *name;
-    uint16_t    addr;
-    uint8_t     func;   // 3 = holding, 4 = input
-    uint8_t     count;  // number of registers (1..2 for now)
-    reg_fmt_t   fmt;
+    uint16_t addr;
+    uint8_t reg_type;  // 3 = holding, 4 = input
+    uint8_t count; // number of registers (1..2 for now)
+    reg_fmt_t fmt;
 } reg_desc_t;
 
 // Minimal initial catalog (you can extend this later)
 static const reg_desc_t s_reg_table[] = {
-    // name          addr  func  count  fmt
-    { "Version (1..3)",  1,   4,    3,  REG_FMT_UINT16 },          // Input regs 1-3
-    { "Room temp T15",   215, 4,    1,  REG_FMT_TEMP_CENTI_S16 },  // Input.T15 (x100°C)
-    { "Tank top T11",    211, 4,    1,  REG_FMT_TEMP_CENTI_S16 },  // Input.T11
-    { "Tank bottom T12", 212, 4,    1,  REG_FMT_TEMP_CENTI_S16 },  // Input.T12
-    { "Control.State",   1002, 4,   1,  REG_FMT_UINT16 },          // Input.Control.State
+    // name          addr  reg_type  count  fmt
+    {"Version (1..3)", 1, 4, 3, REG_FMT_UINT16},            // Input regs 1-3
+    {"Room temp T15", 215, 4, 1, REG_FMT_TEMP_CENTI_S16},   // Input.T15 (x100°C)
+    {"Tank top T11", 211, 4, 1, REG_FMT_TEMP_CENTI_S16},    // Input.T11
+    {"Tank bottom T12", 212, 4, 1, REG_FMT_TEMP_CENTI_S16}, // Input.T12
+    {"Control.State", 1002, 4, 1, REG_FMT_UINT16},          // Input.Control.State
 };
 
-static const int s_reg_count = (int)(sizeof(s_reg_table)/sizeof(s_reg_table[0]));
+static const int s_reg_count = (int)(sizeof(s_reg_table) / sizeof(s_reg_table[0]));
 
 // UI elements
-static lv_obj_t *s_lbl_status   = NULL;  // top status bar
-static lv_obj_t *s_lbl_selected = NULL;  // selected register
-static lv_obj_t *s_lbl_value    = NULL;  // last read value
-static lv_obj_t *s_btn_read     = NULL;
-static lv_obj_t *s_btn_select   = NULL;
+static lv_obj_t *s_lbl_status = NULL;   // top status bar
+static lv_obj_t *s_lbl_selected = NULL; // selected register
+static lv_obj_t *s_lbl_value = NULL;    // last read value
+static lv_obj_t *s_btn_read = NULL;
+static lv_obj_t *s_btn_select = NULL;
 
 // Modal list overlay
-static lv_obj_t *s_overlay      = NULL;
+static lv_obj_t *s_overlay = NULL;
 
-static int       s_current_index = 0;
+static int s_current_index = 0;
 
 // ---------- Helpers ----------
 
@@ -48,42 +50,52 @@ static void format_value(char *buf,
                          const uint16_t *raw_regs,
                          int raw_count)
 {
-    if (!desc || !raw_regs || raw_count <= 0 || buf_size == 0) {
+    if (!desc || !raw_regs || raw_count <= 0 || buf_size == 0)
+    {
         if (buf_size > 0) buf[0] = '\0';
         return;
     }
 
-    switch (desc->fmt) {
-    case REG_FMT_TEMP_CENTI_S16: {
-        int16_t v = (int16_t)raw_regs[0];
-        int whole = v / 100;
-        int frac  = v % 100;
-        if (frac < 0) frac = -frac;
-        lv_snprintf(buf, buf_size, "%d.%02d C", whole, frac);
-        break;
-    }
-    case REG_FMT_UINT16: {
-        if (raw_count == 1) {
-            lv_snprintf(buf, buf_size, "%u", (unsigned)raw_regs[0]);
-        } else if (raw_count == 2) {
-            // Simple "hi:lo" representation
-            lv_snprintf(buf, buf_size, "%u / %u",
-                        (unsigned)raw_regs[0],
-                        (unsigned)raw_regs[1]);
-        } else {
-            lv_snprintf(buf, buf_size, "%u (n=%d)",
-                        (unsigned)raw_regs[0], raw_count);
+    switch (desc->fmt)
+    {
+        case REG_FMT_TEMP_CENTI_S16:
+        {
+            int16_t v = (int16_t)raw_regs[0];
+            int whole = v / 100;
+            int frac = v % 100;
+            if (frac < 0) frac = -frac;
+            lv_snprintf(buf, buf_size, "%d.%02d C", whole, frac);
+            break;
         }
-        break;
-    }
-    case REG_FMT_INT16: {
-        int16_t v = (int16_t)raw_regs[0];
-        lv_snprintf(buf, buf_size, "%d", (int)v);
-        break;
-    }
-    default:
-        lv_snprintf(buf, buf_size, "n/a");
-        break;
+        case REG_FMT_UINT16:
+        {
+            if (raw_count == 1)
+            {
+                lv_snprintf(buf, buf_size, "%u", (unsigned)raw_regs[0]);
+            }
+            else if (raw_count == 2)
+            {
+                // Simple "hi:lo" representation
+                lv_snprintf(buf, buf_size, "%u / %u",
+                            (unsigned)raw_regs[0],
+                            (unsigned)raw_regs[1]);
+            }
+            else
+            {
+                lv_snprintf(buf, buf_size, "%u (n=%d)",
+                            (unsigned)raw_regs[0], raw_count);
+            }
+            break;
+        }
+        case REG_FMT_INT16:
+        {
+            int16_t v = (int16_t)raw_regs[0];
+            lv_snprintf(buf, buf_size, "%d", (int)v);
+            break;
+        }
+        default:
+            lv_snprintf(buf, buf_size, "n/a");
+            break;
     }
 }
 
@@ -93,10 +105,10 @@ static void update_selected_label(void)
 
     const reg_desc_t *d = &s_reg_table[s_current_index];
     lv_label_set_text_fmt(s_lbl_selected,
-                          "Selected: %s (addr %u, func 0x%02X, count %u)",
+                          "Selected: %s (addr %u, reg_type 0x%02X, count %u)",
                           d->name,
                           (unsigned)d->addr,
-                          (unsigned)d->func,
+                          (unsigned)d->reg_type,
                           (unsigned)d->count);
 }
 
@@ -109,12 +121,15 @@ static void dbg_status_timer_cb(lv_timer_t *timer)
 
     bool online = nilan_modbus_is_online();
 
-    if (online) {
+    if (online)
+    {
         float age = nilan_modbus_get_secs_since_last_ok();
         lv_label_set_text_fmt(s_lbl_status,
                               "Status: ONLINE (last OK %.1fs ago)",
                               (double)age);
-    } else {
+    }
+    else
+    {
         lv_label_set_text(s_lbl_status, "Status: offline");
     }
 }
@@ -123,7 +138,8 @@ static void dbg_status_timer_cb(lv_timer_t *timer)
 
 static void overlay_close(void)
 {
-    if (s_overlay) {
+    if (s_overlay)
+    {
         lv_obj_del(s_overlay);
         s_overlay = NULL;
     }
@@ -138,7 +154,8 @@ static void reg_list_item_event_cb(lv_event_t *e)
     update_selected_label();
 
     // Also clear the last value (forces a new read)
-    if (s_lbl_value) {
+    if (s_lbl_value)
+    {
         lv_label_set_text(s_lbl_value, "Value: (not read yet)");
     }
 
@@ -149,7 +166,8 @@ static void reg_list_item_event_cb(lv_event_t *e)
 static void select_btn_event_cb(lv_event_t *e)
 {
     (void)e;
-    if (s_overlay) {
+    if (s_overlay)
+    {
         // Already open; do nothing
         return;
     }
@@ -167,7 +185,8 @@ static void select_btn_event_cb(lv_event_t *e)
     lv_obj_set_size(list, 280, 180);
     lv_obj_center(list);
 
-    for (int i = 0; i < s_reg_count; ++i) {
+    for (int i = 0; i < s_reg_count; ++i)
+    {
         const reg_desc_t *d = &s_reg_table[i];
         lv_obj_t *btn = lv_list_add_btn(list, NULL, d->name);
         lv_obj_add_event_cb(btn,
@@ -191,24 +210,18 @@ static void read_btn_event_cb(lv_event_t *e)
     const reg_desc_t *d = &s_reg_table[s_current_index];
 
     uint16_t raw[4] = {0};
-    nilan_mb_err_t err = NILAN_MB_ERR_NONE;
-    bool ok = false;
+    //nilan_mb_err_t err = NILAN_MB_ERR_NONE;
+    bool modbus_read_ok = false;
 
-    if (d->func == 4) {
-        ok = nilan_modbus_read_input_block(d->addr, d->count, raw, &err);
-    } else if (d->func == 3) {
-        ok = nilan_modbus_read_holding_block(d->addr, d->count, raw, &err);
-    } else {
-        ok = false;
-        err = NILAN_MB_ERR_FUNC;
+    modbus_read_ok = nilan_read_regs(d->reg_type, d->addr, d->count, raw);
+
+
+    if (modbus_read_ok == false)
+    {
+        lv_label_set_text_fmt(s_lbl_value, "Read CRC error");
+        return;     
     }
 
-    if (!ok) {
-        lv_label_set_text_fmt(s_lbl_value,
-                              "Value: ERROR (mb_err=%d)",
-                              (int)err);
-        return;
-    }
 
     char buf[64];
     format_value(buf, sizeof(buf), d, raw, d->count);

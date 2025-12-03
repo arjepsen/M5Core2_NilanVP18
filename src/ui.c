@@ -10,7 +10,7 @@ static lv_obj_t *s_tv = NULL;
 
 void ui_init(void)
 {
-    bsp_display_lock(0);
+    lvgl_port_lock(0);
 
     // Root tileview
     s_tv = lv_tileview_create(lv_scr_act());
@@ -40,5 +40,5 @@ void ui_init(void)
     // Start on screen 1
     lv_obj_set_tile_id(s_tv, 0, 0, LV_ANIM_OFF);
 
-    bsp_display_unlock();
+    lvgl_port_unlock();
 }
