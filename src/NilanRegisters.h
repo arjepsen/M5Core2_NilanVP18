@@ -8,20 +8,18 @@
  * Another array holds values for each register - in ram.
  */
 
-#define NILAN_HOLDING_REG ((uint8_t)3)
-#define NILAN_INPUT_REG   ((uint8_t)4)
+#define NILAN_HOLDING_REG 0x03//((uint8_t)3)
+#define NILAN_INPUT_REG 0x04//((uint8_t)4)
 
 static const char *control_modes[] = {
-    "Off", "Heat", "Cool", "Auto", "Service"
-};
+    "Off", "Heat", "Cool", "Auto", "Service"};
 
 static const char *control_states[] = {
-    "Off", "Shift", "Stop", "Start", "Standby", "Ventilation Stop", 
-    "Ventilation", "Heating", "Cooling", "Hot Water", 
+    "Off", "Shift", "Stop", "Start", "Standby", "Ventilation Stop",
+    "Ventilation", "Heating", "Cooling", "Hot Water",
     "Legionella", "Cooling + hot water", "Central Heating",
     "Defrost", "Frost secure", "Service", "Alarm",
-    "Heatin + hot water"
-};
+    "Heatin + hot water"};
 
 // static const char *alarm_list[] = {
 //     "None", "Hardware", "Timeout", "Fire", "Pressure",
@@ -34,19 +32,14 @@ static const char *control_states[] = {
 // };
 
 static const char *week_programs[] = {
-    "None", "Program 1", "Program 2", "Program 3", "Erase"
-};
+    "None", "Program 1", "Program 2", "Program 3", "Erase"};
 
 static const char *user_functions[] = {
     "None", "Exted", "Inlet", "Exhaust", "External heater offset",
-    "Ventilate", "Cooker hood"
-};
+    "Ventilate", "Cooker hood"};
 
 static const char *air_exchange_modes[] = {
-    "Energy", "Comfort", "Comfort water"
-};
-
-
+    "Energy", "Comfort", "Comfort water"};
 
 typedef enum
 {
@@ -65,11 +58,11 @@ typedef enum
     NILAN_REGID_IR_INPUT_AIRFILTER_ALARM,
     // NILAN_REGID_IR_INPUT_DOOR_OPEN,
     NILAN_REGID_IR_INPUT_SMOKE_ALARM,
-    //NILAN_REGID_IR_INPUT_MOTOR_THERMO_ALARM,
+    // NILAN_REGID_IR_INPUT_MOTOR_THERMO_ALARM,
     NILAN_REGID_IR_INPUT_FROST_OVERHT,
     NILAN_REGID_IR_INPUT_AIRFLOW_MONITOR,
     NILAN_REGID_IR_INPUT_HI_PRESSURE_SWITCH,
-    //NILAN_REGID_IR_INPUT_LO_PRESSURE_SWITCH,
+    // NILAN_REGID_IR_INPUT_LO_PRESSURE_SWITCH,
     NILAN_REGID_IR_INPUT_BOILING,
     // NILAN_REGID_IR_INPUT_3WAY_POS,
     // NILAN_REGID_IR_INPUT_DEFROST_HG,
@@ -77,14 +70,14 @@ typedef enum
     NILAN_REGID_IR_INPUT_USERFUNC2,
     // NILAN_REGID_IR_INPUT_DAMPER_CLOSED,
     // NILAN_REGID_IR_INPUT_DAMPER_OPENED,
-    //NILAN_REGID_IR_INPUT_FC_OR_THERMO_ALARM,
+    // NILAN_REGID_IR_INPUT_FC_OR_THERMO_ALARM,
 
     // 200 – Temperatures, pressures, RH, CO2
     NILAN_REGID_IR_T0_CONTROLLER,
     // NILAN_REGID_IR_T1_INTAKE, // connected to T8
-    NILAN_REGID_IR_T2_INLET, // HMMMM... gives 0.....
-                             // NILAN_REGID_IR_T3_EXHAUST,    // not connected
-                             // NILAN_REGID_IR_T4_OUTLET,     // not connected
+    NILAN_REGID_IR_T2_INLET,      // HMMMM... gives 0.....
+                                  // NILAN_REGID_IR_T3_EXHAUST,    // not connected
+                                  // NILAN_REGID_IR_T4_OUTLET,     // not connected
     NILAN_REGID_IR_T5_CONDENSOR,  //*
     NILAN_REGID_IR_T6_EVAPORATOR, //*
     NILAN_REGID_IR_T7_INLET_POSTHEATER,
@@ -95,7 +88,7 @@ typedef enum
     NILAN_REGID_IR_T12_TANK_BOTTOM, //*
                                     // NILAN_REGID_IR_T13_RETURN,
                                     // NILAN_REGID_IR_T14_SUPPLY,
-    NILAN_REGID_IR_T15_ROOM_PANEL, //*
+    NILAN_REGID_IR_T15_ROOM_PANEL,  //*
     NILAN_REGID_IR_T16_AUX,
     // NILAN_REGID_IR_T17_PREHEAT,
     // NILAN_REGID_IR_T18_PRESS_PIPE,
@@ -105,7 +98,7 @@ typedef enum
                              // NILAN_REGID_IR_AIRQUAL_CO2,
 
     // 4xx – Alarm list
-    NILAN_REGID_IR_ALARM_STATUS,    // bitmask 0x80 active alarms, 0x03 # of alarms
+    NILAN_REGID_IR_ALARM_STATUS, // bitmask 0x80 active alarms, 0x03 # of alarms
     NILAN_REGID_IR_ALARM_LIST1_ID,
     NILAN_REGID_IR_ALARM_LIST1_DATE,
     NILAN_REGID_IR_ALARM_LIST1_TIME,
@@ -134,7 +127,7 @@ typedef enum
     NILAN_REGID_IR_AIRTEMP_TEMP_INLET_SETPT,
     NILAN_REGID_IR_AIRTEMP_TEMP_CONTROL,
     NILAN_REGID_IR_AIRTEMP_TEMP_ROOM,
-    //NILAN_REGID_IR_AIRTEMP_EFF_PCT,
+    // NILAN_REGID_IR_AIRTEMP_EFF_PCT,
     NILAN_REGID_IR_AIRTEMP_CAP_SET,
     NILAN_REGID_IR_AIRTEMP_CAP_ACT,
 
@@ -169,7 +162,7 @@ typedef enum
     // NILAN_REGID_HR_OUTPUT_SMOKE_FLAP,
     // NILAN_REGID_HR_OUTPUT_BYPASS_OPEN,
     // NILAN_REGID_HR_OUTPUT_BYPASS_CLOSE,
-    //NILAN_REGID_HR_OUTPUT_AIR_CIRC_PUMP,
+    // NILAN_REGID_HR_OUTPUT_AIR_CIRC_PUMP,
     // NILAN_REGID_HR_OUTPUT_AIR_HEAT_ALLOW,
     // NILAN_REGID_HR_OUTPUT_AIR_HEAT_1, // air heater relays
     // NILAN_REGID_HR_OUTPUT_AIR_HEAT_2,
@@ -197,8 +190,8 @@ typedef enum
     // 200 – Analog outputs - in percent
     NILAN_REGID_HR_OUTPUT_EXHAUST_SPEED,
     NILAN_REGID_HR_OUTPUT_INLET_SPEED,
-    //NILAN_REGID_HR_OUTPUT_AIR_HEAT_CAPACITY,
-    //NILAN_REGID_HR_OUTPUT_CENTR_HEAT_CAPACITY,
+    // NILAN_REGID_HR_OUTPUT_AIR_HEAT_CAPACITY,
+    // NILAN_REGID_HR_OUTPUT_CENTR_HEAT_CAPACITY,
     NILAN_REGID_HR_OUTPUT_COMPR_CAPAPACITY,
     NILAN_REGID_HR_OUTPUT_PREHEAT_CAP,
 
@@ -243,7 +236,7 @@ typedef enum
     NILAN_REGID_HR_CONTROL_TEMP_SET,
     NILAN_REGID_HR_CONTROL_SERVICE_MODE, // SERVICE MODE SELECT
     NILAN_REGID_HR_CONTROL_SERVICE_PCT,  // SERVICE MODE CAPACITY SETPOINT
-                                        // NILAN_REGID_HR_CONTROL_PRESET,          // factory restore
+                                         // NILAN_REGID_HR_CONTROL_PRESET,          // factory restore
 
     // 11xx – AirFlow settings
     NILAN_REGID_HR_AIRFLOW_AIR_EXCH_MODE,
@@ -251,7 +244,7 @@ typedef enum
     // NILAN_REGID_HR_AIRFLOW_TEST_SELECT,
     // NILAN_REGID_HR_AIRFLOW_LAST_TEST_DAY,
     // NILAN_REGID_HR_AIRFLOW_TEST_STATE,
-    //NILAN_REGID_HR_AIRFLOW_FILT_ALM_TYPE,
+    // NILAN_REGID_HR_AIRFLOW_FILT_ALM_TYPE,
 
     // 1200 – AirTemp settings
     NILAN_REGID_HR_AIRTEMP_COOL_SET,
@@ -296,7 +289,6 @@ typedef enum
 
 } nilan_reg_id_t;
 
-
 // This enumeration is used for defining how to handle the data from each register.
 typedef enum
 {
@@ -308,7 +300,6 @@ typedef enum
     // later: bitfield, 32-bit, etc.
 } nilan_data_type_t;
 
-
 // Set up a struct definition for holding the values read from each register, and a timestamp.
 typedef struct
 {
@@ -318,23 +309,30 @@ typedef struct
 } nilan_reg_state_t;
 
 // Declare the value array.
-static nilan_reg_state_t nilan_reg_state[NILAN_REGID_COUNT];
+extern nilan_reg_state_t nilan_reg_state[NILAN_REGID_COUNT];
 
 //////////////////////////////////////////////////
-
-
 
 // This is the structure definition, for holding the meta-data for each register.
 typedef struct
 {
-    uint16_t addr;       // Modbus register
-    uint8_t reg_type;        // 3 = holding, 4 = input
+    uint16_t addr;               // Modbus register
+    uint8_t reg_type;            // 3 = holding, 4 = input
     nilan_data_type_t data_type; // how to interpret raw value
-    const char *name;    // "Tank top T11", for UI
+    const char *name;            // "Tank top T11", for UI
 } nilan_reg_meta_t;
 
 extern const nilan_reg_meta_t nilan_registers[NILAN_REGID_COUNT];
 
+// Update a contiguous block [start_addr ... start_addr + qty - 1] into the state array.
+void nilan_update_state_range(uint8_t reg_type,
+                              uint16_t start_addr,
+                              uint16_t qty,
+                              const uint16_t *regs,
+                              uint32_t timestamp_ms);
 
+
+// Init lookup tables
+void nilan_registers_init();
 
 #endif /* NILAN_REGISTERS_H */

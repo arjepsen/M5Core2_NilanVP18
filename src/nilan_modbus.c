@@ -15,7 +15,9 @@
 
 #include "CRC16.h"
 
-static const char *TAG = "nilan_modbus";
+#include "NilanRegisters.h"
+
+// static const char *TAG = "nilan_modbus";
 
 // ---------------- UART / Modbus configuration ----------------
 //
@@ -42,27 +44,70 @@ static const char *TAG = "nilan_modbus";
 
 // Background poll: tank top/bottom (input registers 211 / 212)
 #define NILAN_REG_TANK_TOP 211
-#define NILAN_POLL_INTERVAL_MS 3000    // ~3 s, as discussed
+#define NILAN_POLL_INTERVAL_MS 3000    // Poll interval in ms
 #define NILAN_OFFLINE_TIMEOUT_MS 10000 // 10 s without OK => OFFLINE
 
-// ---------------- Internal state ----------------
+// ====================================================
+// TYPEDEFS
+// ====================================================
 
-static bool s_started = false;
-static TaskHandle_t s_poll_task = NULL;
+typedef struct
+{
+    uint8_t reg_type;    // 3 = holding, 4 = input (your reg_type)
+    uint16_t start_addr; // Modbus start address for this block
+    uint16_t qty;        // number of registers read in one shot
 
-// UART mutex to serialize all Modbus transactions
-static SemaphoreHandle_t s_uart_mutex = NULL;
+    // Filled at boot:
+    uint8_t id_count; // how many nilan_reg_id in this group
+    uint8_t *id_list; // dynamically allocated [id_count] entries
+} nilan_poll_group_t;
 
-// Latest cached temperatures (centi-degC, signed)
-static int16_t s_tank_top_cC = 0;
-static int16_t s_tank_bot_cC = 0;
+// ====================================================
+// VARIABLES
+// ====================================================
+
+// // Latest cached temperatures (centi-degC, signed)
+// static int16_t s_tank_top_cC = 0;
+// static int16_t s_tank_bot_cC = 0;
 
 // Online / stats
-static uint32_t s_ok_count = 0;
-static uint32_t s_fail_count = 0;
-static uint32_t s_last_ok_ms = 0; // 0 = never
-static nilan_mb_err_t s_last_err = NILAN_MB_ERR_NONE;
+static uint32_t ok_count = 0;
+static uint32_t fail_count = 0;
+static uint32_t last_ok_ms = 0; // 0 = never
+static nilan_mb_err_t last_err = NILAN_MB_ERR_NONE;
 
+static volatile uint32_t nilan_fault_bitmap = 0;
+
+static bool modbus_started = false;
+static TaskHandle_t poll_task = NULL;
+
+// UART mutex to serialize all Modbus transactions
+static SemaphoreHandle_t uart_mutex = NULL;
+
+// Set up array of poll-group structs. We'll fill 'em out dynamically at runtime.
+static nilan_poll_group_t poll_groups[] = {
+    // Input ranges
+    {NILAN_INPUT_REG, 100, 16, 0, NULL}, // Discrete I/O - on/off's
+    {NILAN_INPUT_REG, 200, 23, 0, NULL}, // Analog I/O - temperatures.
+    {NILAN_INPUT_REG, 400, 10, 0, NULL}, // Alarms
+    {NILAN_INPUT_REG, 1000, 4, 0, NULL}, // System control/state
+    {NILAN_INPUT_REG, 1100, 5, 0, NULL}, // Airflow - fan steps, filters.
+    {NILAN_INPUT_REG, 1200, 7, 0, NULL}, // Air Temperatures
+
+    // Holding ranges
+    {NILAN_HOLDING_REG, 100, 28, 0, NULL},
+    {NILAN_HOLDING_REG, 200, 6, 0, NULL},
+    {NILAN_HOLDING_REG, 300, 6, 0, NULL},   // Time/Clock
+    {NILAN_HOLDING_REG, 600, 6, 0, NULL},   // User function (1)
+    {NILAN_HOLDING_REG, 610, 6, 0, NULL},   // User function (2)
+    {NILAN_HOLDING_REG, 1000, 7, 0, NULL},
+    {NILAN_HOLDING_REG, 1100, 5, 0, NULL},
+    {NILAN_HOLDING_REG, 1200, 8, 0, NULL},
+    {NILAN_HOLDING_REG, 1700, 2, 0, NULL}, // Tank temperature setpoints
+    {NILAN_HOLDING_REG, 1910, 4, 0, NULL}, // Air quality
+};
+
+static const size_t POLL_GROUP_COUNT = sizeof(poll_groups) / sizeof(poll_groups[0]);
 
 
 
@@ -70,15 +115,13 @@ static nilan_mb_err_t s_last_err = NILAN_MB_ERR_NONE;
 // PROTOTYPES
 // ====================================================
 static inline uint32_t get_time_ms();
-
+static void init_poll_groups();
 
 // ====================================================
 // IMPLEMENTATIONS
 // ====================================================
 
-
-
-bool nilan_read_regs(uint8_t func, uint16_t start, uint16_t qty, uint16_t *regs)
+bool nilan_read_regs(uint8_t reg_type, uint16_t start, uint16_t qty, uint16_t *regs)
 {
     bool crc_ok = false;
 
@@ -86,8 +129,8 @@ bool nilan_read_regs(uint8_t func, uint16_t start, uint16_t qty, uint16_t *regs)
     const size_t TX_BYTE_COUNT = 8;
 
     uint8_t tx[TX_BYTE_COUNT];
-    tx[0] = (uint8_t)NILAN_SLAVE_ADDR;  // 0x30
-    tx[1] = func;
+    tx[0] = (uint8_t)NILAN_SLAVE_ADDR; // 0x30
+    tx[1] = reg_type;
     tx[2] = (uint8_t)(start >> 8);
     tx[3] = (uint8_t)(start & 0xFF);
     tx[4] = (uint8_t)(qty >> 8);
@@ -98,22 +141,22 @@ bool nilan_read_regs(uint8_t func, uint16_t start, uint16_t qty, uint16_t *regs)
     tx[7] = (uint8_t)((crc >> 8) & 0xFF); // CRC high
 
     // Expected normal response length:  [addr][func][byte_count][data...][crc_lo][crc_hi]
-    const int EXPECTED_RESPONSE_LENGTH = 5 + (qty * 2);
+    const uint32_t EXPECTED_RESPONSE_LENGTH = 5 + (qty * 2); // addr + func + count + crc = 5 bytes. Each register is 16 bit, hence the *2
     int response_length = 0;
 
     uint8_t rx[NILAN_UART_BUF_SIZE];
 
-    if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+    if (xSemaphoreTake(uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
     {
         // Clear any stale data and send request
-        uart_flush_input(NILAN_UART_PORT);
+        // uart_flush_input(NILAN_UART_PORT);
 
         // Send data.
         uart_write_bytes(NILAN_UART_PORT, (const char *)tx, TX_BYTE_COUNT);
 
         response_length = uart_read_bytes(NILAN_UART_PORT, rx, EXPECTED_RESPONSE_LENGTH, pdMS_TO_TICKS(500)); // 500 ms timeout
 
-        xSemaphoreGive(s_uart_mutex);
+        xSemaphoreGive(uart_mutex);
     }
 
     if (response_length == EXPECTED_RESPONSE_LENGTH)
@@ -122,100 +165,72 @@ bool nilan_read_regs(uint8_t func, uint16_t start, uint16_t qty, uint16_t *regs)
         uint16_t rx_crc = (uint16_t)rx[response_length - 2] | ((uint16_t)rx[response_length - 1] << 8);
         uint16_t calc_crc = modbus_crc16(rx, (uint16_t)(response_length - 2));
 
-        crc_ok = rx_crc == calc_crc;
-
-        // Extract registers
-        for (uint16_t i = 0; i < qty; ++i)
+        crc_ok = (rx_crc == calc_crc);
+        if (crc_ok)
         {
-            uint16_t hi = rx[3 + (i * 2)];
-            uint16_t lo = rx[3 + (i * 2) + 1];
-            regs[i] = (uint16_t)((hi << 8) | lo);
+            // Extract registers
+            for (uint16_t i = 0; i < qty; ++i)
+            {
+                uint16_t hi = rx[3 + (i * 2)];
+                uint16_t lo = rx[4 + (i * 2)];
+                regs[i] = (uint16_t)((hi << 8) | lo);
+            }
         }
     }
 
     return crc_ok;
 }
 
-// // Low-level: write single holding register (0x06). Assumes we hold mutex.
-// static esp_err_t nilan_write_single_reg(uint16_t reg, uint16_t value)
-// {
-//     const size_t BYTE_COUNT = 8;
-
-//     uint8_t tx[BYTE_COUNT];
-//     tx[0] = (uint8_t)NILAN_SLAVE_ADDR;
-//     tx[1] = 0x06; // Write Single Register
-//     tx[2] = (uint8_t)(reg >> 8);
-//     tx[3] = (uint8_t)(reg & 0xFF);
-//     tx[4] = (uint8_t)(value >> 8);
-//     tx[5] = (uint8_t)(value & 0xFF);
-
-//     uint16_t crc = modbus_crc16(tx, 6);
-//     tx[6] = (uint8_t)(crc & 0xFF);
-//     tx[7] = (uint8_t)((crc >> 8) & 0xFF);
-
-//     uart_flush_input(NILAN_UART_PORT);
-//     uart_write_bytes(NILAN_UART_PORT, (const char *)tx, BYTE_COUNT);
-
-//     // Response is an exact echo of the request (addr, func, reg, value, crc)
-//     uint8_t rx[BYTE_COUNT];
-//     uart_read_bytes(NILAN_UART_PORT, rx, BYTE_COUNT, pdMS_TO_TICKS(500));
-
-//     uint16_t rx_crc = (uint16_t)rx[6] | ((uint16_t)rx[7] << 8);
-//     uint16_t calc_crc = modbus_crc16(rx, 6);
-//     if (rx_crc != calc_crc)
-//     {
-//         return ESP_FAIL;
-//     }
-
-//     return ESP_OK;
-// }
-
 // ---------------- Polling task ----------------
 
 static void nilan_poll_task(void *arg)
 {
-    (void)arg;
+    (void)arg; // Silence the unused parameter warning.
 
-    uint16_t regs[2];
+    uint16_t regs_data[36];  // [addr][func][byte_count][data...][crc_lo][crc_hi] - arbitrarily large(36) to hold enough registers.
+    size_t group_index = 0;
 
     while (1)
     {
-        // Serialize with any UI-triggered Modbus call
-        if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-        {
-            nilan_mb_err_t errcode = NILAN_MB_ERR_NONE;
-            esp_err_t err = nilan_read_regs(0x04, // Input registers
-                                            NILAN_REG_TANK_TOP,
-                                            2,
-                                            regs);
-            xSemaphoreGive(s_uart_mutex);
+        nilan_poll_group_t *grp = &poll_groups[group_index];    // pointer to the (next) poll group.
 
+        // Read all registers in group, and place their raw value in the regs array.
+        bool crc_ok = nilan_read_regs(grp->reg_type, grp->start_addr, grp->qty, regs_data);  // Read all consecutive registers in group range.
+
+        if (crc_ok)
+        {
             uint32_t now_ms = get_time_ms();
 
-            if (err == ESP_OK)
+            // iterate through each known ID in group, and update its state.
+            for (uint8_t i = 0; i < grp->id_count; i++)
             {
-                // Docs: values are in 0.01 °C, signed
-                s_tank_top_cC = (int16_t)regs[0];
-                s_tank_bot_cC = (int16_t)regs[1];
+                uint8_t index = grp->id_list[i];
+                const nilan_reg_meta_t *register_meta = &nilan_registers[index];
 
-                s_ok_count++;
-                s_last_ok_ms = now_ms;
-                s_last_err = NILAN_MB_ERR_NONE;
+                // Calculate offset to index into the regs_data array.
+                uint16_t offset = (uint16_t)(register_meta->addr - grp->start_addr);
 
-                // ESP_LOGD(TAG, "Poll OK: top=%d cC, bot=%d cC", (int)s_tank_top_cC, (int)s_tank_bot_cC);
+                // Update the state array struct for this register.
+                nilan_reg_state[index].raw = regs_data[offset];
+                nilan_reg_state[index].timestamp_ms = now_ms;
+                nilan_reg_state[index].valid = 1;
             }
-            else
-            {
-                s_fail_count++;
-                s_last_err = errcode;
-                ESP_LOGW(TAG, "Poll failed\n");
-            }
+
+            ok_count++;
+            last_ok_ms = now_ms;
+            last_err = NILAN_MB_ERR_NONE;
         }
         else
         {
-            // Could not get mutex; treat as "internal" failure
-            s_fail_count++;
-            s_last_err = NILAN_MB_ERR_INTERNAL;
+            fail_count++;
+            last_err = NILAN_MB_ERR_CRC;
+        }
+
+        // Rotate to next group.
+        group_index++;
+        if (group_index >= POLL_GROUP_COUNT)
+        {
+            group_index = 0;
         }
 
         vTaskDelay(pdMS_TO_TICKS(NILAN_POLL_INTERVAL_MS));
@@ -226,18 +241,13 @@ static void nilan_poll_task(void *arg)
 
 bool nilan_modbus_start(void)
 {
-    if (s_started)
+    if (modbus_started)
     {
         return true;
     }
 
     // Mutex first
-    s_uart_mutex = xSemaphoreCreateMutex();
-    // if (!s_uart_mutex)
-    // {
-    //     ESP_LOGE(TAG, "Failed to create UART mutex");
-    //     return false;
-    // }
+    uart_mutex = xSemaphoreCreateMutex();
 
     // Configure UART
     uart_config_t cfg = {
@@ -263,6 +273,7 @@ bool nilan_modbus_start(void)
                         NULL,
                         0);
 
+    init_poll_groups();
 
     // Create polling task
     xTaskCreate(
@@ -271,17 +282,17 @@ bool nilan_modbus_start(void)
         4096,
         NULL,
         8,
-        &s_poll_task);
+        &poll_task);
 
-    s_started = true;
-    //ESP_LOGI(TAG, "Nilan Modbus started (UART1 on GPIO32/33, 19200 8E1)");
+    modbus_started = true;
+    // ESP_LOGI(TAG, "Nilan Modbus started (UART1 on GPIO32/33, 19200 8E1)");
     return true;
 }
 
 // Has the module seen at least one valid reply recently?
 bool nilan_modbus_is_online(void)
 {
-    uint32_t last = s_last_ok_ms;
+    uint32_t last = last_ok_ms;
     if (last == 0)
     {
         return false; // never seen a good frame
@@ -292,40 +303,42 @@ bool nilan_modbus_is_online(void)
     return (age <= NILAN_OFFLINE_TIMEOUT_MS);
 }
 
-int16_t nilan_get_tank_top_cC(void)
+int16_t nilan_get_tank_top_cC()
 {
-    return s_tank_top_cC;
+    // uint16_t raw_value = nilan_reg_state[NILAN_REGID_IR_T11_TANK_TOP].raw;
+
+    return nilan_reg_state[NILAN_REGID_IR_T11_TANK_TOP].raw;
 }
 
 int16_t nilan_get_tank_bottom_cC(void)
 {
-    return s_tank_bot_cC;
+    return nilan_reg_state[NILAN_REGID_IR_T12_TANK_BOTTOM].raw;
 }
 
 // Extra debug helpers
 uint32_t nilan_modbus_get_ok_count(void)
 {
-    return s_ok_count;
+    return ok_count;
 }
 
 uint32_t nilan_modbus_get_fail_count(void)
 {
-    return s_fail_count;
+    return fail_count;
 }
 
 nilan_mb_err_t nilan_modbus_get_last_error(void)
 {
-    return s_last_err;
+    return last_err;
 }
 
 float nilan_modbus_get_secs_since_last_ok(void)
 {
-    if (s_last_ok_ms == 0)
+    if (last_ok_ms == 0)
     {
         return -1.0f; // never
     }
     uint32_t now = get_time_ms();
-    uint32_t diff = now - s_last_ok_ms;
+    uint32_t diff = now - last_ok_ms;
     return (float)diff / 1000.0f;
 }
 
@@ -333,24 +346,12 @@ float nilan_modbus_get_secs_since_last_ok(void)
 
 bool nilan_modbus_read_input_block(uint16_t start_reg, uint16_t qty, uint16_t *out_regs)
 {
-    bool response = false;
-    if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-    {
-        response = nilan_read_regs(0x04, start_reg, qty, out_regs);
-        xSemaphoreGive(s_uart_mutex);
-    }
-    return response;
+    return nilan_read_regs(0x04, start_reg, qty, out_regs);
 }
 
 bool nilan_modbus_read_holding_block(uint16_t start_reg, uint16_t qty, uint16_t *out_regs)
 {
-    bool response = false;
-    if (xSemaphoreTake(s_uart_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-    {
-        response = nilan_read_regs(0x03, start_reg, qty, out_regs);
-        xSemaphoreGive(s_uart_mutex);
-    }
-    return response;
+    return nilan_read_regs(0x03, start_reg, qty, out_regs);
 }
 
 // bool nilan_modbus_write_single_holding(uint16_t reg,
@@ -363,7 +364,6 @@ bool nilan_modbus_read_holding_block(uint16_t start_reg, uint16_t qty, uint16_t 
 //     }
 // }
 
-
 // ===============================================================
 // HELPERS
 // ===============================================================
@@ -371,4 +371,68 @@ static inline uint32_t get_time_ms()
 {
     // xTaskGetTickCount() is 32-bit, wraparound-safe.
     return (uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
+}
+
+static void init_poll_groups()
+{
+    // Iterate over all the groups we set up above.
+    for (size_t grp_id = 0; grp_id < POLL_GROUP_COUNT; ++grp_id)    
+    {   
+        nilan_poll_group_t *grp = &poll_groups[grp_id]; // pointer/alias to the group for shorter lines.
+
+        uint16_t start = grp->start_addr;
+        uint16_t end   = (uint16_t)(start + grp->qty); // exclusive
+
+        // First pass: count how many registers fall in this range
+        uint8_t count = 0;
+        bool found_first_reg_id = false;
+        size_t first_reg_id = 0;
+        size_t last_reg_id = 0;
+
+        for (size_t reg_id = 0; reg_id < NILAN_REGID_COUNT; ++reg_id)
+        {
+            const nilan_reg_meta_t *reg_meta = &nilan_registers[reg_id];   // pointer/alias to the register meta data struct
+
+            if (reg_meta->reg_type != grp->reg_type)
+                continue;
+
+            if (reg_meta->addr < start || reg_meta->addr >= end)
+                continue;
+
+            if (!found_first_reg_id)
+            {
+                first_reg_id = reg_id;
+                found_first_reg_id = true;
+            }
+
+            last_reg_id = reg_id;
+            ++count;
+        }
+
+        grp->id_count = count;
+
+        if (count == 0)
+        {
+            grp->id_list = NULL;
+            continue;  // nothing to track in this group (still OK to read on wire)
+        }
+
+
+        // Second pass: actually fill the ID list
+        grp->id_list = malloc(count);   // Allocate space for the array.
+        uint8_t idx = 0;
+
+        for (size_t reg_id = first_reg_id; reg_id <= last_reg_id; ++reg_id)
+        {
+            const nilan_reg_meta_t *reg_meta = &nilan_registers[reg_id];
+
+            if (reg_meta->reg_type != grp->reg_type)
+                continue;
+
+            if (reg_meta->addr < start || reg_meta->addr >= end)
+                continue;
+
+            grp->id_list[idx++] = (uint8_t)reg_id;
+        }
+    }
 }

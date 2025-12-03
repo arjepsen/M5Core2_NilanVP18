@@ -1,5 +1,6 @@
 #include "ui_main.h"
 #include "lvgl.h"
+#include "nilan_modbus.h"
 
 // ---------- Layout constants for 320x240 ----------
 #define TOP_BAR_H     20
@@ -28,13 +29,16 @@ static int s_vent_step = 3;
 static bool s_power_on = true;
 
 // LVGL objects we update
-static lv_obj_t *s_lbl_step     = NULL;  // now below fan
+static lv_obj_t *s_lbl_step     = NULL;
 static lv_obj_t *s_lbl_tank_top = NULL;
 static lv_obj_t *s_lbl_tank_bot = NULL;
 static lv_obj_t *s_lbl_power    = NULL;
 
 // Popup handle (lazy-created)
 static lv_obj_t *s_step_popup = NULL;
+
+static lv_obj_t *s_tank_water = NULL;   // water gradient rect
+
 
 // ---------- Helpers ----------
 static void set_label_u8(lv_obj_t *lbl, int v)
@@ -87,6 +91,28 @@ static void tank_water_set_gradient(lv_obj_t *water, int top_c, int bot_c)
     lv_obj_set_style_bg_grad_dir(water, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_bg_opa(water, LV_OPA_COVER, 0);
 }
+
+// Periodic main-screen status update (tank temps)
+static void main_status_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+
+    if (!s_tank_water || !s_lbl_tank_top || !s_lbl_tank_bot) {
+        return;
+    }
+
+    // Values from Modbus are in centi-degrees C (x100)
+    int16_t top_cC = nilan_get_tank_top_cC();
+    int16_t bot_cC = nilan_get_tank_bottom_cC();
+
+    int top_c = top_cC / 100;
+    int bot_c = bot_cC / 100;
+
+    set_label_temp(s_lbl_tank_top, top_c);
+    set_label_temp(s_lbl_tank_bot, bot_c);
+    tank_water_set_gradient(s_tank_water, top_c, bot_c);
+}
+
 
 /* ---------------- Fan icon (3-blade ventilator style) ----------------
  * Outer ring + 3 thick blades + center hub.
@@ -352,15 +378,24 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_set_style_text_color(s_lbl_tank_top, lv_color_hex(COL_TEXT), 0);
     lv_obj_set_style_text_font(s_lbl_tank_top, &lv_font_montserrat_28, 0);
     lv_obj_align(s_lbl_tank_top, LV_ALIGN_TOP_MID, 0, 6);
-    set_label_temp(s_lbl_tank_top, 48);
+    //set_label_temp(s_lbl_tank_top, 48);
 
     s_lbl_tank_bot = lv_label_create(water);
     lv_obj_set_style_text_color(s_lbl_tank_bot, lv_color_hex(COL_TEXT), 0);
     lv_obj_set_style_text_font(s_lbl_tank_bot, &lv_font_montserrat_28, 0);
     lv_obj_align(s_lbl_tank_bot, LV_ALIGN_BOTTOM_MID, 0, -6);
-    set_label_temp(s_lbl_tank_bot, 35);
+    //set_label_temp(s_lbl_tank_bot, 35);
 
-    tank_water_set_gradient(water, 48, 35);
+    // Initial values from Modbus (will be 0 until first poll)
+    int16_t init_top_cC = nilan_get_tank_top_cC();
+    int16_t init_bot_cC = nilan_get_tank_bottom_cC();
+    int init_top_c = init_top_cC / 100;
+    int init_bot_c = init_bot_cC / 100;
+
+    //tank_water_set_gradient(water, 48, 35);
+    set_label_temp(s_lbl_tank_top, init_top_c);
+    set_label_temp(s_lbl_tank_bot, init_bot_c);
+    tank_water_set_gradient(water, init_top_c, init_bot_c);
 
     lv_obj_t *div = lv_obj_create(water);
     lv_obj_set_size(div, 56, 1);
@@ -386,4 +421,7 @@ void ui_main_create(lv_obj_t *tile)
     power_btn_update();
 
     lv_obj_add_event_cb(pwr_btn, on_power_tapped, LV_EVENT_CLICKED, NULL);
+
+    s_tank_water = water;
+    lv_timer_create(main_status_timer_cb, 1000, NULL);  // 1Hz UI update
 }
