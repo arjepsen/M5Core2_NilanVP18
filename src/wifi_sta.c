@@ -5,17 +5,17 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
-#include "esp_log.h"
 #include "esp_event.h"
+#include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 
 static const char *TAG = "wifi_sta";
 
-#define WIFI_CONNECTED_BIT  BIT0
-#define WIFI_FAIL_BIT       BIT1
-#define WIFI_MAX_RETRY      10
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT BIT1
+#define WIFI_MAX_RETRY 10
 
 // -------- Defaults live HERE --------
 // Set via build_flags in platformio.ini.
@@ -24,7 +24,7 @@ static const char *TAG = "wifi_sta";
 #endif
 
 #ifndef WIFI_STA_DEFAULT_PASS
-#define WIFI_STA_DEFAULT_PASS "PASSWD"
+#define WIFI_STA_DEFAULT_PASS "PWD"
 #endif
 
 // How long wifi_sta_start() should wait before giving up (ms)
@@ -33,13 +33,13 @@ static const char *TAG = "wifi_sta";
 #endif
 // -----------------------------------
 
-static EventGroupHandle_t s_evt = NULL;
-static esp_netif_t *s_netif = NULL;
+static EventGroupHandle_t event = NULL;
+static esp_netif_t *netif = NULL;
 
-static volatile bool s_connected = false;
-static volatile uint32_t s_ip_u32 = 0;
-static int s_retry = 0;
-static bool s_inited = false;
+static volatile bool connected = false;
+static volatile uint32_t ip_addr = 0;
+static int retry_count = 0;
+static bool wifi_initialized = false;
 
 static void wifi_event_handler(void *arg,
                                esp_event_base_t event_base,
@@ -48,30 +48,36 @@ static void wifi_event_handler(void *arg,
 {
     (void)arg;
 
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
+    {
         esp_wifi_connect();
         return;
     }
 
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        s_connected = false;
-        s_ip_u32 = 0;
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
+    {
+        connected = false;
+        ip_addr = 0;
 
-        if (s_retry < WIFI_MAX_RETRY) {
-            s_retry++;
+        if (retry_count < WIFI_MAX_RETRY)
+        {
+            retry_count++;
             esp_wifi_connect();
-        } else {
-            xEventGroupSetBits(s_evt, WIFI_FAIL_BIT);
+        }
+        else
+        {
+            xEventGroupSetBits(event, WIFI_FAIL_BIT);
         }
         return;
     }
 
-    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+    {
         const ip_event_got_ip_t *e = (const ip_event_got_ip_t *)event_data;
-        s_ip_u32 = e->ip_info.ip.addr;
-        s_connected = true;
-        s_retry = 0;
-        xEventGroupSetBits(s_evt, WIFI_CONNECTED_BIT);
+        ip_addr = e->ip_info.ip.addr;
+        connected = true;
+        retry_count = 0;
+        xEventGroupSetBits(event, WIFI_CONNECTED_BIT);
 
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&e->ip_info.ip));
         return;
@@ -80,17 +86,20 @@ static void wifi_event_handler(void *arg,
 
 static void wifi_sta_init_internal(const char *ssid, const char *pass)
 {
-    if (s_inited) return;
-    s_inited = true;
+    if (wifi_initialized) return;
+    wifi_initialized = true;
 
-    s_evt = xEventGroupCreate();
+    event = xEventGroupCreate();
 
     // --- NVS required by Wi-Fi ---
     esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
-    } else {
+    }
+    else
+    {
         ESP_ERROR_CHECK(ret);
     }
 
@@ -102,7 +111,8 @@ static void wifi_sta_init_internal(const char *ssid, const char *pass)
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(ret);
 
     // Must be after event loop create
-    s_netif = esp_netif_create_default_wifi_sta();
+    
+netif = esp_netif_create_default_wifi_sta();
 
     // --- Wi-Fi driver init ---
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -135,9 +145,12 @@ bool wifi_sta_start(void)
 
     bool ok = wifi_sta_wait_connected(WIFI_STA_START_TIMEOUT_MS);
 
-    if (ok) {
+    if (ok)
+    {
         ESP_LOGI(TAG, "Wi-Fi connected");
-    } else {
+    }
+    else
+    {
         ESP_LOGW(TAG, "Wi-Fi NOT connected (timeout %u ms)",
                  (unsigned)WIFI_STA_START_TIMEOUT_MS);
     }
@@ -146,26 +159,25 @@ bool wifi_sta_start(void)
 
 bool wifi_sta_wait_connected(uint32_t timeout_ms)
 {
-    if (!s_evt) return false;
+    if (!event) return false;
 
     const TickType_t to = pdMS_TO_TICKS(timeout_ms);
     EventBits_t bits = xEventGroupWaitBits(
-        s_evt,
+        event,
         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
         pdFALSE,
         pdFALSE,
-        to
-    );
+        to);
 
     return (bits & WIFI_CONNECTED_BIT) != 0;
 }
 
 bool wifi_sta_is_connected(void)
 {
-    return s_connected;
+    return connected;
 }
 
 uint32_t wifi_sta_get_ip_u32(void)
 {
-    return s_ip_u32;
+    return ip_addr;
 }

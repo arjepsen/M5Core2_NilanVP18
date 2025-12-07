@@ -25,20 +25,19 @@ void axp192_init()
 
     i2c_master_bus_add_device(i2c_bus, &dev_cfg, &axp192_handle);
 
-
     // Enable the 5V boost circuit for 5V on Port-A while we're at it.
     uint8_t tx_buf[2];
 
     // First, set the axp192 gpio0 up to 3.3V - it controls "bus_pw_en"
-    tx_buf[0] = 0x91; // work on register 91H
-    i2c_master_transmit_receive(axp192_handle, &tx_buf[0], 1, &tx_buf[1], 1, -1);  // read register 0x91
-    tx_buf[1] = (tx_buf[1] & 0x0F) | 0xF0;    // Preserve bit 0-3 (reserved), write 1111 to bit 4-7 (gpio0 = 3.3V)
-    i2c_master_transmit(axp192_handle, tx_buf, 2, -1);  // Write the new value.
+    tx_buf[0] = 0x91;                                                             // work on register 91H
+    i2c_master_transmit_receive(axp192_handle, &tx_buf[0], 1, &tx_buf[1], 1, -1); // read register 0x91
+    tx_buf[1] = (tx_buf[1] & 0x0F) | 0xF0;                                        // Preserve bit 0-3 (reserved), write 1111 to bit 4-7 (gpio0 = 3.3V)
+    i2c_master_transmit(axp192_handle, tx_buf, 2, -1);                            // Write the new value.
 
     // Second, set up gpio0 for LDO output, using register 0x90
-    tx_buf[0] = 0x90;   // set register
-    i2c_master_transmit_receive(axp192_handle, &tx_buf[0], 1, &tx_buf[1], 1, -1);    // retrieve current values.
-    tx_buf[1] = (tx_buf[1] & 0xF8) | 0x02;  // bit 3-7 reserved, bit 0-2 = 010 => low-noise LDO.
+    tx_buf[0] = 0x90;                                                             // set register
+    i2c_master_transmit_receive(axp192_handle, &tx_buf[0], 1, &tx_buf[1], 1, -1); // retrieve current values.
+    tx_buf[1] = (tx_buf[1] & 0xF8) | 0x02;                                        // bit 3-7 reserved, bit 0-2 = 010 => low-noise LDO.
     i2c_master_transmit(axp192_handle, tx_buf, 2, -1);
 
     // Third, enable 5V boost, via the EXTEN bit (bit 2 of register 0x10)
@@ -50,11 +49,9 @@ void axp192_init()
     axp192_initialized = true;
 }
 
-
-
 void set_backlight_level(uint8_t backlight_level)
 {
-    if (axp192_initialized)  // Ignore call if handle isn't set up.
+    if (axp192_initialized) // Ignore call if handle isn't set up.
     {
 
         // Clamp within range.
@@ -64,4 +61,3 @@ void set_backlight_level(uint8_t backlight_level)
         i2c_master_transmit(axp192_handle, tx_buf, 2, 1000);
     }
 }
-
