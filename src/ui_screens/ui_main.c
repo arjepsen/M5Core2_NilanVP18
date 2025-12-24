@@ -1,6 +1,7 @@
 #include "ui_main.h"
 #include "lvgl.h"
 #include "nilan_modbus.h"
+#include <math.h>
 
 // ---------- Layout constants for 320x240 ----------
 #define TOP_BAR_H 20
@@ -24,6 +25,8 @@
 #define COL_TANK_SHELL 0x2F2F2F
 #define COL_TANK_BORDER 0x6A6A6A
 
+
+
 // ---------- State ----------
 static int vent_step = 3;
 static bool power_on = true;
@@ -34,15 +37,22 @@ static lv_obj_t *labl_tank_top = NULL;
 static lv_obj_t *labl_tank_bottom = NULL;
 static lv_obj_t *labl_power = NULL;
 
+
 // Popup handle (lazy-created)
 static lv_obj_t *step_popup = NULL;
 
 static lv_obj_t *tank_water_gradient = NULL; // water gradient rect
 
-// ---------- PROTOTYPES ----------------
+
+
+
+// ======================================================
+// PROTOTYPES
+// ======================================================
 
 static inline void set_label_u8(lv_obj_t *label, int v);
 static inline void set_label_temp(lv_obj_t *label, int t_c);
+static inline void on_step_tapped(lv_event_t *e);
 static uint32_t lerp_rgb(uint32_t a, uint32_t b, uint8_t t /*0..255*/);
 static uint32_t temp_to_warm_color(int t_c);
 static void tank_water_set_gradient(lv_obj_t *water, int top_c, int bot_c);
@@ -54,12 +64,12 @@ static void popup_close();
 static void popup_step_minus(lv_event_t *e);
 static void popup_step_plus(lv_event_t *e);
 static void popup_open(lv_obj_t *parent);
-static void on_step_tapped(lv_event_t *e);
 
 
 
-
-// ---------- Main screen ----------
+// ======================================================
+// MAIN SCREEN
+// ======================================================
 void ui_main_create(lv_obj_t *tile)
 {
     lv_obj_set_style_bg_color(tile, lv_color_hex(COL_BG), 0);
@@ -293,6 +303,67 @@ static void main_status_timer_cb(lv_timer_t *t)
  * Outer ring + 3 thick blades + center hub.
  * NO label inside.
  */
+// static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex)
+// {
+//     lv_obj_t *cont = lv_obj_create(parent);
+//     lv_obj_set_size(cont, size_px, size_px);
+//     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+//     lv_obj_set_style_border_width(cont, 0, 0);
+//     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+//     lv_obj_clear_flag(cont, LV_OBJ_FLAG_CLICKABLE);
+
+//     // Outer ring
+//     lv_obj_t *ring = lv_arc_create(cont);
+//     lv_obj_set_size(ring, size_px, size_px);
+//     lv_obj_center(ring);
+//     lv_arc_set_bg_angles(ring, 0, 360);
+
+//     lv_obj_set_style_arc_width(ring, 2, LV_PART_MAIN);
+//     lv_obj_set_style_arc_color(ring, lv_color_hex(outline_hex), LV_PART_MAIN);
+//     lv_obj_set_style_arc_opa(ring, LV_OPA_0, LV_PART_INDICATOR);
+//     lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, LV_PART_KNOB);
+//     lv_obj_set_style_border_width(ring, 0, 0);
+//     lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
+
+//     // Blades
+//     const int blade_r = size_px - 10;
+//     const int arc_w = 4; // thicker = more fan-like
+
+//     for (int i = 0; i < 3; i++)
+//     {
+//         lv_obj_t *arc = lv_arc_create(cont);
+//         lv_obj_set_size(arc, blade_r, blade_r);
+//         lv_obj_center(arc);
+
+//         // big sweep so it reads like a curved blade
+//         lv_arc_set_bg_angles(arc, 235, 35);
+//         lv_arc_set_rotation(arc, i * 120);
+//         lv_arc_set_value(arc, 0);
+
+//         lv_obj_set_style_arc_width(arc, arc_w, LV_PART_MAIN);
+//         lv_obj_set_style_arc_color(arc, lv_color_hex(outline_hex), LV_PART_MAIN);
+
+//         lv_obj_set_style_arc_opa(arc, LV_OPA_0, LV_PART_INDICATOR);
+//         lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
+//         lv_obj_set_style_border_width(arc, 0, 0);
+
+//         lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+//     }
+
+//     // Center hub (small circle)
+//     lv_obj_t *hub = lv_obj_create(cont);
+//     int hub_sz = size_px / 5;
+//     lv_obj_set_size(hub, hub_sz, hub_sz);
+//     lv_obj_center(hub);
+//     lv_obj_set_style_radius(hub, LV_RADIUS_CIRCLE, 0);
+//     lv_obj_set_style_bg_color(hub, lv_color_hex(outline_hex), 0);
+//     lv_obj_set_style_bg_opa(hub, LV_OPA_COVER, 0);
+//     lv_obj_set_style_border_width(hub, 0, 0);
+//     lv_obj_clear_flag(hub, LV_OBJ_FLAG_SCROLLABLE);
+//     lv_obj_clear_flag(hub, LV_OBJ_FLAG_CLICKABLE);
+
+//     return cont;
+// }
 static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex)
 {
     lv_obj_t *cont = lv_obj_create(parent);
@@ -302,47 +373,33 @@ static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_CLICKABLE);
 
-    // Outer ring
-    lv_obj_t *ring = lv_arc_create(cont);
-    lv_obj_set_size(ring, size_px, size_px);
-    lv_obj_center(ring);
-    lv_arc_set_bg_angles(ring, 0, 360);
-
-    lv_obj_set_style_arc_width(ring, 2, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(ring, lv_color_hex(outline_hex), LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(ring, LV_OPA_0, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, LV_PART_KNOB);
-    lv_obj_set_style_border_width(ring, 0, 0);
-    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
-
-    // Blades
-    const int blade_r = size_px - 10;
-    const int arc_w = 4; // thicker = more fan-like
+    const int blade_r = size_px / 2 - 5;           // Slightly inset from edge
+    const int arc_w   = 8;                       // Blade thickness
+    const int blade_angle_span = 50;              // Short blades with good spacing between them
 
     for (int i = 0; i < 3; i++)
     {
-        lv_obj_t *arc = lv_arc_create(cont);
-        lv_obj_set_size(arc, blade_r, blade_r);
-        lv_obj_center(arc);
+        int start_angle = i * 120;
+        int end_angle   = start_angle + blade_angle_span;
 
-        // big sweep so it reads like a curved blade
-        lv_arc_set_bg_angles(arc, 235, 35);
-        lv_arc_set_rotation(arc, i * 120);
-        lv_arc_set_value(arc, 0);
+        lv_obj_t *blade = lv_arc_create(cont);
+        lv_obj_set_size(blade, blade_r * 2, blade_r * 2);
+        lv_obj_center(blade);
 
-        lv_obj_set_style_arc_width(arc, arc_w, LV_PART_MAIN);
-        lv_obj_set_style_arc_color(arc, lv_color_hex(outline_hex), LV_PART_MAIN);
+        lv_arc_set_bg_angles(blade, start_angle, end_angle);
+        lv_obj_set_style_arc_width(blade, arc_w, LV_PART_MAIN);
+        lv_obj_set_style_arc_color(blade, lv_color_hex(outline_hex), LV_PART_MAIN);
+        lv_obj_set_style_arc_opa(blade, LV_OPA_COVER, LV_PART_MAIN);
 
-        lv_obj_set_style_arc_opa(arc, LV_OPA_0, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
-        lv_obj_set_style_border_width(arc, 0, 0);
-
-        lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_arc_opa(blade, LV_OPA_0, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_opa(blade, LV_OPA_TRANSP, LV_PART_KNOB);
+        lv_obj_set_style_border_width(blade, 0, 0);
+        lv_obj_clear_flag(blade, LV_OBJ_FLAG_CLICKABLE);
     }
 
-    // Center hub (small circle)
+    // Center hub
     lv_obj_t *hub = lv_obj_create(cont);
-    int hub_sz = size_px / 5;
+    int hub_sz = size_px / 4;                      // Adjust if you want smaller/bigger
     lv_obj_set_size(hub, hub_sz, hub_sz);
     lv_obj_center(hub);
     lv_obj_set_style_radius(hub, LV_RADIUS_CIRCLE, 0);
@@ -354,6 +411,7 @@ static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline
 
     return cont;
 }
+
 
 // ---------- Power button ----------
 static void power_btn_update()
@@ -455,8 +513,9 @@ static void popup_open(lv_obj_t *parent)
     lv_obj_add_event_cb(step_popup, (lv_event_cb_t)popup_close, LV_EVENT_CLICKED, NULL);
 }
 
-static void on_step_tapped(lv_event_t *e)
+static inline void on_step_tapped(lv_event_t *e)
 {
     lv_obj_t *tile = (lv_obj_t *)lv_event_get_user_data(e);
     popup_open(tile);
 }
+
