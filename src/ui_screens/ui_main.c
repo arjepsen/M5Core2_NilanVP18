@@ -2,6 +2,9 @@
 #include "lvgl.h"
 #include "nilan_modbus.h"
 #include <math.h>
+#include <limits.h>
+
+
 
 // ---------- Layout constants for 320x240 ----------
 #define TOP_BAR_H 32
@@ -49,6 +52,20 @@ typedef struct {
 
 static wifi_icon_t wifi_icon = {0};
 
+
+
+typedef struct {
+    uint32_t color_hex;
+
+    uint8_t  blade_w;     // arc width for blades
+    uint8_t  blade_span;  // degrees (e.g. 50)
+    int16_t  blade_off;   // px (e.g. 25)
+    int16_t  blade_diam;  // px (e.g. size_px - 25)
+
+    uint8_t  hub_w;       // e.g. 3
+    int16_t  hub_diam;    // e.g. 35
+} fan_draw_cfg_t;
+
 // ======================================================
 // PROTOTYPES
 // ======================================================
@@ -70,6 +87,15 @@ static void popup_open(lv_obj_t *parent);
 static void wifi_icon_create(lv_obj_t *parent, int right_margin, uint32_t inactive_hex);
 static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t inactive_hex);
 
+
+static void fan_draw_cb(lv_event_t *e);
+static void fan_delete_cb(lv_event_t *e);
+static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex);
+
+static void fan_free_event_cb(lv_event_t * e);
+static void fan_draw_event_cb(lv_event_t * e);
+
+
 // ======================================================
 // MAIN SCREEN
 // ======================================================
@@ -79,27 +105,6 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
     lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ---------- Top bar ----------
-    // // ---------- Top bar (thicker, larger text) ----------
-    // lv_obj_t *top = lv_obj_create(tile);
-    // lv_obj_set_size(top, 320, 32);  // <<< Thicker: was 20, now 32
-    // lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
-    // lv_obj_set_style_bg_color(top, lv_color_hex(COL_TOPBAR), 0);
-    // lv_obj_set_style_bg_opa(top, LV_OPA_COVER, 0);
-    // lv_obj_set_style_border_width(top, 0, 0);
-    // lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
-
-    // lv_obj_t *lbl_time = lv_label_create(top);
-    // lv_label_set_text(lbl_time, "22:45  WiFi");
-    // lv_obj_set_style_text_color(lbl_time, lv_color_hex(COL_TEXT_DIM), 0);
-    // lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_20, 0);  // <<< Larger: was default/smaller
-    // lv_obj_align(lbl_time, LV_ALIGN_LEFT_MID, 10, 0);  // Slight padding from left
-
-    // lv_obj_t *lbl_mode = lv_label_create(top);
-    // lv_label_set_text(lbl_mode, "Service");
-    // lv_obj_set_style_text_color(lbl_mode, lv_color_hex(COL_TEXT_DIM), 0);
-    // lv_obj_set_style_text_font(lbl_mode, &lv_font_montserrat_20, 0);  // <<< Larger and matching
-    // lv_obj_align(lbl_mode, LV_ALIGN_RIGHT_MID, -10, 0);  // Slight padding from right
 
     // ---------- Top bar ----------
     lv_obj_t *top = lv_obj_create(tile);
@@ -128,27 +133,6 @@ lv_obj_set_style_pad_all(top, 0, 0);   // kills theme padding
     lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_22, 0);
     lv_obj_align(lbl_time, LV_ALIGN_CENTER, 0, 0);
 
-    // // WiFi bars on the right — bottom at 10px above lower edge, right margin 20px
-    // // be aware, there seems to be a padding of 13...
-    // int bar_width = 5;
-    // int bar_spacing = 3;
-    // int total_width = 4 * bar_width + 3 * bar_spacing;  // 29px
-    // int right_margin = 20;
-    // int start_x = 320 - right_margin - total_width;  // 271
-
-    // int bar_h[] = {6, 10, 14, 18};
-    // int bottom_margin = 5;  // 10px above lower edge
-    // int baseline_y = 32 - bottom_margin;  // 22
-
-    // for (int i = 0; i < 4; i++) {
-    //     lv_obj_t *bar = lv_obj_create(top);
-    //     lv_obj_set_size(bar, bar_width, bar_h[i]);
-    //     lv_obj_set_pos(bar, start_x + i * (bar_width + bar_spacing), baseline_y - bar_h[i]);
-    //     lv_obj_set_style_bg_color(bar, lv_color_hex(COL_TEXT_DIM), 0);
-    //     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    //     lv_obj_set_style_radius(bar, 2, 0);
-    //     lv_obj_set_style_border_width(bar, 0, 0);
-    // }
 
 lv_obj_set_style_pad_all(top, 0, 0);          // recommended
 wifi_icon_create(top, 20, 0x404040);          // right margin 20, inactive color
@@ -184,7 +168,7 @@ wifi_icon_set_level(3, COL_TEXT_DIM, 0x404040); // example: 3 bars active
     // Create the step label FIRST
     labl_step = lv_label_create(fan_card);
     lv_obj_set_style_text_color(labl_step, lv_color_hex(COL_TEXT), 0);
-    lv_obj_set_style_text_font(labl_step, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(labl_step, &lv_font_montserrat_22, 0);
 
     // Fan icon — keep large (78px) for good visibility
     lv_obj_t *fan = fan_icon_create(fan_card, 78, COL_TEXT_DIM);
@@ -353,60 +337,42 @@ static void main_status_timer_cb(lv_timer_t *t)
 }
 
 // ======================================================
-// FAN ICON
+// FAN ICON (FAST: single object draws hub + 4 blades)
 // ======================================================
+
 static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex)
 {
     lv_obj_t *cont = lv_obj_create(parent);
     lv_obj_set_size(cont, size_px, size_px);
+
+    // Make it a "drawing surface only"
     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(cont, 0, 0);
+    lv_obj_set_style_pad_all(cont, 0, 0);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_CLICKABLE);
 
-    const int blade_r = size_px / 2 - 5;
-    const int arc_w   = 8;
-    const int blade_angle_span = 50;
+    // Allocate cfg once (cheap) so draw callback has everything precomputed
+    fan_draw_cfg_t *cfg = (fan_draw_cfg_t *)lv_malloc(sizeof(fan_draw_cfg_t));
+    if(!cfg) return cont; // fallback: empty
 
-    // Three blades
-    for (int i = 0; i < 3; i++)
-    {
-        int start_angle = i * 120;
-        int end_angle   = start_angle + blade_angle_span;
+    cfg->color_hex  = outline_hex;
 
-        lv_obj_t *blade = lv_arc_create(cont);
-        lv_obj_set_size(blade, blade_r * 2, blade_r * 2);
-        lv_obj_center(blade);
+    cfg->blade_w    = 4;
+    cfg->blade_span = 50;
+    cfg->blade_off  = 25;
+    cfg->blade_diam = (int16_t)(size_px - 25);   // matches your "blade_r*2 - 15" result
 
-        lv_arc_set_bg_angles(blade, start_angle, end_angle);
-        lv_obj_set_style_arc_width(blade, arc_w, LV_PART_MAIN);
-        lv_obj_set_style_arc_color(blade, lv_color_hex(outline_hex), LV_PART_MAIN);
-        lv_obj_set_style_arc_opa(blade, LV_OPA_COVER, LV_PART_MAIN);
+    cfg->hub_w      = 3;
+    cfg->hub_diam   = 35;
 
-        lv_obj_set_style_arc_opa(blade, LV_OPA_0, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_opa(blade, LV_OPA_TRANSP, LV_PART_KNOB);
-        lv_obj_set_style_border_width(blade, 0, 0);
-        lv_obj_clear_flag(blade, LV_OBJ_FLAG_CLICKABLE);
-    }
-
-    // Center ring using lv_arc — perfect smooth hollow circle, no artifacts
-    lv_obj_t *center_ring = lv_arc_create(cont);
-    int ring_radius = size_px / 5;  // Adjust size: larger = bigger ring
-    lv_obj_set_size(center_ring, ring_radius * 2, ring_radius * 2);
-    lv_obj_center(center_ring);
-
-    lv_arc_set_bg_angles(center_ring, 0, 360);  // Full circle
-    lv_obj_set_style_arc_width(center_ring, 3, LV_PART_MAIN);  // Ring thickness (2-5 looks good)
-    lv_obj_set_style_arc_color(center_ring, lv_color_hex(outline_hex), LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(center_ring, LV_OPA_COVER, LV_PART_MAIN);
-
-    lv_obj_set_style_arc_opa(center_ring, LV_OPA_0, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(center_ring, LV_OPA_TRANSP, LV_PART_KNOB);
-    lv_obj_set_style_border_width(center_ring, 0, 0);
-    lv_obj_clear_flag(center_ring, LV_OBJ_FLAG_CLICKABLE);
+    // Draw + free hooks
+    lv_obj_add_event_cb(cont, fan_draw_event_cb, LV_EVENT_DRAW_MAIN, cfg);
+    lv_obj_add_event_cb(cont, fan_free_event_cb, LV_EVENT_DELETE, cfg);
 
     return cont;
 }
+
 
 // ---------- Power button ----------
 static void power_btn_update()
@@ -569,4 +535,68 @@ static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t ina
                                   lv_color_hex(on ? active_hex : inactive_hex),
                                   0);
     }
+}
+
+
+static void fan_draw_event_cb(lv_event_t * e)
+{
+    if(lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
+
+    lv_obj_t * obj = lv_event_get_target(e);
+    fan_draw_cfg_t * cfg = (fan_draw_cfg_t *)lv_event_get_user_data(e);
+    if(!cfg) return;
+
+    lv_layer_t * layer = lv_event_get_layer(e);
+    if(!layer) return;
+
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+
+    const int32_t w = lv_area_get_width(&a);
+    const int32_t h = lv_area_get_height(&a);
+
+    // True center of the fan icon object (hub & number center)
+    const int32_t cx = a.x1 + (w / 2);
+    const int32_t cy = a.y1 + (h / 2);
+
+    lv_draw_arc_dsc_t d;
+    lv_draw_arc_dsc_init(&d);
+    d.color   = lv_color_hex(cfg->color_hex);
+    d.opa     = LV_OPA_COVER;
+    d.rounded = 0;
+
+    // ---- Hub ring ----
+    d.width       = cfg->hub_w;
+    d.center.x    = (lv_coord_t)cx;
+    d.center.y    = (lv_coord_t)cy;
+    d.radius      = (uint16_t)(cfg->hub_diam / 2);
+    d.start_angle = 0;
+    d.end_angle   = 360;
+    lv_draw_arc(layer, &d);
+
+    // ---- 4 blades ----
+    static const int16_t dx[4] = { 0,  1,  0, -1 };
+    static const int16_t dy[4] = {-1,  0,  1,  0 };
+    static const uint16_t a0[4] = { 0, 90, 180, 270 };
+
+    const int32_t blade_r = cfg->blade_diam / 2;
+
+    d.width  = cfg->blade_w;
+    d.radius = (uint16_t)blade_r;
+
+    for(int i = 0; i < 4; i++) {
+        d.center.x    = (lv_coord_t)(cx + (int32_t)dx[i] * cfg->blade_off);
+        d.center.y    = (lv_coord_t)(cy + (int32_t)dy[i] * cfg->blade_off);
+        d.start_angle = a0[i];
+        d.end_angle   = (uint16_t)(a0[i] + cfg->blade_span);
+        lv_draw_arc(layer, &d);
+    }
+}
+
+
+static void fan_free_event_cb(lv_event_t * e)
+{
+    if(lv_event_get_code(e) != LV_EVENT_DELETE) return;
+    fan_draw_cfg_t * cfg = (fan_draw_cfg_t *)lv_event_get_user_data(e);
+    if(cfg) lv_free(cfg);
 }
