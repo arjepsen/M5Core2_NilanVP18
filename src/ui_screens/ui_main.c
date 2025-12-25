@@ -4,7 +4,7 @@
 #include <math.h>
 
 // ---------- Layout constants for 320x240 ----------
-#define TOP_BAR_H 20
+#define TOP_BAR_H 32
 #define MAIN_H (240 - TOP_BAR_H)
 
 #define LEFT_W 128
@@ -25,8 +25,6 @@
 #define COL_TANK_SHELL 0x2F2F2F
 #define COL_TANK_BORDER 0x6A6A6A
 
-
-
 // ---------- State ----------
 static int vent_step = 3;
 static bool power_on = true;
@@ -37,14 +35,19 @@ static lv_obj_t *labl_tank_top = NULL;
 static lv_obj_t *labl_tank_bottom = NULL;
 static lv_obj_t *labl_power = NULL;
 
-
 // Popup handle (lazy-created)
 static lv_obj_t *step_popup = NULL;
 
 static lv_obj_t *tank_water_gradient = NULL; // water gradient rect
 
+// Wifi indicator
+typedef struct {
+    lv_obj_t *cont;
+    lv_obj_t *bar[4];
+    uint8_t last_level;   // 0..4, 255 = invalid
+} wifi_icon_t;
 
-
+static wifi_icon_t wifi_icon = {0};
 
 // ======================================================
 // PROTOTYPES
@@ -64,8 +67,8 @@ static void popup_close();
 static void popup_step_minus(lv_event_t *e);
 static void popup_step_plus(lv_event_t *e);
 static void popup_open(lv_obj_t *parent);
-
-
+static void wifi_icon_create(lv_obj_t *parent, int right_margin, uint32_t inactive_hex);
+static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t inactive_hex);
 
 // ======================================================
 // MAIN SCREEN
@@ -77,23 +80,80 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
 
     // ---------- Top bar ----------
+    // // ---------- Top bar (thicker, larger text) ----------
+    // lv_obj_t *top = lv_obj_create(tile);
+    // lv_obj_set_size(top, 320, 32);  // <<< Thicker: was 20, now 32
+    // lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
+    // lv_obj_set_style_bg_color(top, lv_color_hex(COL_TOPBAR), 0);
+    // lv_obj_set_style_bg_opa(top, LV_OPA_COVER, 0);
+    // lv_obj_set_style_border_width(top, 0, 0);
+    // lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+
+    // lv_obj_t *lbl_time = lv_label_create(top);
+    // lv_label_set_text(lbl_time, "22:45  WiFi");
+    // lv_obj_set_style_text_color(lbl_time, lv_color_hex(COL_TEXT_DIM), 0);
+    // lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_20, 0);  // <<< Larger: was default/smaller
+    // lv_obj_align(lbl_time, LV_ALIGN_LEFT_MID, 10, 0);  // Slight padding from left
+
+    // lv_obj_t *lbl_mode = lv_label_create(top);
+    // lv_label_set_text(lbl_mode, "Service");
+    // lv_obj_set_style_text_color(lbl_mode, lv_color_hex(COL_TEXT_DIM), 0);
+    // lv_obj_set_style_text_font(lbl_mode, &lv_font_montserrat_20, 0);  // <<< Larger and matching
+    // lv_obj_align(lbl_mode, LV_ALIGN_RIGHT_MID, -10, 0);  // Slight padding from right
+
+    // ---------- Top bar ----------
     lv_obj_t *top = lv_obj_create(tile);
-    lv_obj_set_size(top, 320, TOP_BAR_H);
+    lv_obj_set_size(top, 320, 32);
     lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(top, lv_color_hex(COL_TOPBAR), 0);
     lv_obj_set_style_bg_opa(top, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(top, 0, 0);
     lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+lv_obj_set_style_pad_all(top, 0, 0);   // kills theme padding
 
-    lv_obj_t *lbl_time = lv_label_create(top);
-    lv_label_set_text(lbl_time, "22:45  WiFi");
-    lv_obj_set_style_text_color(lbl_time, lv_color_hex(COL_TEXT_DIM), 0);
-    lv_obj_align(lbl_time, LV_ALIGN_LEFT_MID, 6, 0);
 
+
+
+    // Service on the left
     lv_obj_t *lbl_mode = lv_label_create(top);
-    lv_label_set_text(lbl_mode, "Mode: Auto");
+    lv_label_set_text(lbl_mode, "Service");
     lv_obj_set_style_text_color(lbl_mode, lv_color_hex(COL_TEXT_DIM), 0);
-    lv_obj_align(lbl_mode, LV_ALIGN_RIGHT_MID, -6, 0);
+    lv_obj_set_style_text_font(lbl_mode, &lv_font_montserrat_20, 0);
+    lv_obj_align(lbl_mode, LV_ALIGN_LEFT_MID, 10, 0);
+
+    // Clock in the center
+    lv_obj_t *lbl_time = lv_label_create(top);
+    lv_label_set_text(lbl_time, "22:45");
+    lv_obj_set_style_text_color(lbl_time, lv_color_hex(COL_TEXT), 0);
+    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_22, 0);
+    lv_obj_align(lbl_time, LV_ALIGN_CENTER, 0, 0);
+
+    // // WiFi bars on the right — bottom at 10px above lower edge, right margin 20px
+    // // be aware, there seems to be a padding of 13...
+    // int bar_width = 5;
+    // int bar_spacing = 3;
+    // int total_width = 4 * bar_width + 3 * bar_spacing;  // 29px
+    // int right_margin = 20;
+    // int start_x = 320 - right_margin - total_width;  // 271
+
+    // int bar_h[] = {6, 10, 14, 18};
+    // int bottom_margin = 5;  // 10px above lower edge
+    // int baseline_y = 32 - bottom_margin;  // 22
+
+    // for (int i = 0; i < 4; i++) {
+    //     lv_obj_t *bar = lv_obj_create(top);
+    //     lv_obj_set_size(bar, bar_width, bar_h[i]);
+    //     lv_obj_set_pos(bar, start_x + i * (bar_width + bar_spacing), baseline_y - bar_h[i]);
+    //     lv_obj_set_style_bg_color(bar, lv_color_hex(COL_TEXT_DIM), 0);
+    //     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    //     lv_obj_set_style_radius(bar, 2, 0);
+    //     lv_obj_set_style_border_width(bar, 0, 0);
+    // }
+
+lv_obj_set_style_pad_all(top, 0, 0);          // recommended
+wifi_icon_create(top, 20, 0x404040);          // right margin 20, inactive color
+wifi_icon_set_level(3, COL_TEXT_DIM, 0x404040); // example: 3 bars active
+
 
     // ---------- Main area containers ----------
     lv_obj_t *left = lv_obj_create(tile);
@@ -110,26 +170,33 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_set_style_border_width(right, 0, 0);
     lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ---------- Left: Fan + step number (no card, no text) ----------
-    lv_obj_t *step_btn = lv_btn_create(left);
-    lv_obj_set_size(step_btn, 96, 96);
-    lv_obj_align(step_btn, LV_ALIGN_TOP_MID, 0, 8);
-    lv_obj_set_style_bg_opa(step_btn, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(step_btn, 0, 0);
-    lv_obj_set_style_radius(step_btn, 0, 0);
+    // ---------- Left: Fan + step number inside, with tighter rounded card ----------
+    lv_obj_t *fan_card = lv_obj_create(left);
+    lv_obj_set_size(fan_card, 80, 80);  // <<< Smaller card (was 96) — tighter outline
+    lv_obj_align(fan_card, LV_ALIGN_TOP_MID, 0, 16);  // Shift down a bit to keep centered vertically
+    lv_obj_set_style_bg_opa(fan_card, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(fan_card, 2, 0);
+    lv_obj_set_style_border_color(fan_card, lv_color_hex(COL_TANK_BORDER), 0);
+    lv_obj_set_style_radius(fan_card, 14, 0);  // Same rounded corners as tank
+    lv_obj_set_style_shadow_width(fan_card, 0, 0);  // No shadow
+    lv_obj_clear_flag(fan_card, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *fan = fan_icon_create(step_btn, 78, COL_TEXT_DIM);
+    // Create the step label FIRST
+    labl_step = lv_label_create(fan_card);
+    lv_obj_set_style_text_color(labl_step, lv_color_hex(COL_TEXT), 0);
+    lv_obj_set_style_text_font(labl_step, &lv_font_montserrat_16, 0);
+
+    // Fan icon — keep large (78px) for good visibility
+    lv_obj_t *fan = fan_icon_create(fan_card, 78, COL_TEXT_DIM);
     lv_obj_center(fan);
 
-    // Step number BELOW the fan
-    labl_step = lv_label_create(left);
-    lv_obj_set_style_text_color(labl_step, lv_color_hex(COL_TEXT), 0);
-    lv_obj_set_style_text_font(labl_step, &lv_font_montserrat_32, 0);
-    lv_obj_align_to(labl_step, step_btn, LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
+    // Center the number inside
+    lv_obj_center(labl_step);
     set_label_u8(labl_step, vent_step);
 
-    // Clicking fan area opens popup
-    lv_obj_add_event_cb(step_btn, on_step_tapped, LV_EVENT_CLICKED, tile);
+    // Make the whole card clickable
+    lv_obj_add_flag(fan_card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(fan_card, on_step_tapped, LV_EVENT_CLICKED, tile);
 
     // ---------- Right: Tank ----------
     lv_obj_t *tank_wrap = lv_obj_create(right);
@@ -163,21 +230,18 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_set_style_text_color(labl_tank_top, lv_color_hex(COL_TEXT), 0);
     lv_obj_set_style_text_font(labl_tank_top, &lv_font_montserrat_28, 0);
     lv_obj_align(labl_tank_top, LV_ALIGN_TOP_MID, 0, 6);
-    // set_label_temp(s_lbl_tank_top, 48);
 
     labl_tank_bottom = lv_label_create(water);
     lv_obj_set_style_text_color(labl_tank_bottom, lv_color_hex(COL_TEXT), 0);
     lv_obj_set_style_text_font(labl_tank_bottom, &lv_font_montserrat_28, 0);
     lv_obj_align(labl_tank_bottom, LV_ALIGN_BOTTOM_MID, 0, -6);
-    // set_label_temp(s_lbl_tank_bot, 35);
 
-    // Initial values from Modbus (will be 0 until first poll)
+    // Initial values from Modbus
     int16_t init_top_cC = nilan_get_tank_top_cC();
     int16_t init_bot_cC = nilan_get_tank_bottom_cC();
     int init_top_c = init_top_cC / 100;
     int init_bot_c = init_bot_cC / 100;
 
-    // tank_water_set_gradient(water, 48, 35);
     set_label_temp(labl_tank_top, init_top_c);
     set_label_temp(labl_tank_bottom, init_bot_c);
     tank_water_set_gradient(water, init_top_c, init_bot_c);
@@ -190,7 +254,7 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_set_style_border_width(div, 0, 0);
     lv_obj_clear_flag(div, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ---------- Power ON/OFF button (rect, simple text) ----------
+    // ---------- Power ON/OFF button ----------
     lv_obj_t *pwr_btn = lv_btn_create(tile);
     lv_obj_set_size(pwr_btn, 64, 28);
     lv_obj_align(pwr_btn, LV_ALIGN_BOTTOM_LEFT, 8, -8);
@@ -229,8 +293,7 @@ static inline void set_label_temp(lv_obj_t *label, int t_c)
     lv_label_set_text(label, b);
 }
 
-// --- small RGB hex lerp (8-bit per channel) ---
-static uint32_t lerp_rgb(uint32_t a, uint32_t b, uint8_t t /*0..255*/)
+static uint32_t lerp_rgb(uint32_t a, uint32_t b, uint8_t t)
 {
     uint8_t ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
     uint8_t br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
@@ -242,19 +305,17 @@ static uint32_t lerp_rgb(uint32_t a, uint32_t b, uint8_t t /*0..255*/)
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | bch;
 }
 
-// Map temp to color endpoint (darkened to avoid RGB565 blow-out)
 static uint32_t temp_to_warm_color(int t_c)
 {
     if (t_c < 20) t_c = 20;
     if (t_c > 60) t_c = 60;
 
-    uint32_t cool = 0x234F93; // darker blue
-    uint32_t warm = 0xB86316; // darker orange
+    uint32_t cool = 0x234F93;
+    uint32_t warm = 0xB86316;
     uint8_t k = (uint8_t)((t_c - 20) * 255 / 40);
     return lerp_rgb(cool, warm, k);
 }
 
-// Set real LVGL gradient on the water object
 static void tank_water_set_gradient(lv_obj_t *water, int top_c, int bot_c)
 {
     uint32_t top_col = temp_to_warm_color(top_c);
@@ -266,30 +327,22 @@ static void tank_water_set_gradient(lv_obj_t *water, int top_c, int bot_c)
     lv_obj_set_style_bg_opa(water, LV_OPA_COVER, 0);
 }
 
-// Periodic main-screen status update (tank temps)
 static void main_status_timer_cb(lv_timer_t *t)
 {
-    LV_UNUSED(t);   // Callback needs specific structure.
+    LV_UNUSED(t);
 
-    if (!tank_water_gradient || !labl_tank_top || !labl_tank_bottom)
-    {
-        return;
-    }
+    if (!tank_water_gradient || !labl_tank_top || !labl_tank_bottom) return;
 
     int16_t top_centiC = nilan_get_tank_top_cC();
     int16_t bottom_centiC = nilan_get_tank_bottom_cC();
 
-    int16_t top_C = (int16_t)(((int32_t)top_centiC * 5243) >> 19);   // Divides by 100
-    int16_t bottom_C = (int16_t)(((int32_t)bottom_centiC * 5243) >> 19);   // Divides by 100
+    int16_t top_C = (int16_t)(((int32_t)top_centiC * 5243) >> 19);
+    int16_t bottom_C = (int16_t)(((int32_t)bottom_centiC * 5243) >> 19);
 
-    // Only touch LVGL if something actually changed
     static int16_t last_top_C = INT16_MIN;
     static int16_t last_bottom_C = INT16_MIN;
 
-    if (top_C == last_top_C && bottom_C == last_bottom_C)
-    {
-        return;
-    }
+    if (top_C == last_top_C && bottom_C == last_bottom_C) return;
 
     last_top_C = top_C;
     last_bottom_C = bottom_C;
@@ -299,71 +352,9 @@ static void main_status_timer_cb(lv_timer_t *t)
     tank_water_set_gradient(tank_water_gradient, top_C, bottom_C);
 }
 
-/* ---------------- Fan icon (3-blade ventilator style) ----------------
- * Outer ring + 3 thick blades + center hub.
- * NO label inside.
- */
-// static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex)
-// {
-//     lv_obj_t *cont = lv_obj_create(parent);
-//     lv_obj_set_size(cont, size_px, size_px);
-//     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
-//     lv_obj_set_style_border_width(cont, 0, 0);
-//     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-//     lv_obj_clear_flag(cont, LV_OBJ_FLAG_CLICKABLE);
-
-//     // Outer ring
-//     lv_obj_t *ring = lv_arc_create(cont);
-//     lv_obj_set_size(ring, size_px, size_px);
-//     lv_obj_center(ring);
-//     lv_arc_set_bg_angles(ring, 0, 360);
-
-//     lv_obj_set_style_arc_width(ring, 2, LV_PART_MAIN);
-//     lv_obj_set_style_arc_color(ring, lv_color_hex(outline_hex), LV_PART_MAIN);
-//     lv_obj_set_style_arc_opa(ring, LV_OPA_0, LV_PART_INDICATOR);
-//     lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, LV_PART_KNOB);
-//     lv_obj_set_style_border_width(ring, 0, 0);
-//     lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
-
-//     // Blades
-//     const int blade_r = size_px - 10;
-//     const int arc_w = 4; // thicker = more fan-like
-
-//     for (int i = 0; i < 3; i++)
-//     {
-//         lv_obj_t *arc = lv_arc_create(cont);
-//         lv_obj_set_size(arc, blade_r, blade_r);
-//         lv_obj_center(arc);
-
-//         // big sweep so it reads like a curved blade
-//         lv_arc_set_bg_angles(arc, 235, 35);
-//         lv_arc_set_rotation(arc, i * 120);
-//         lv_arc_set_value(arc, 0);
-
-//         lv_obj_set_style_arc_width(arc, arc_w, LV_PART_MAIN);
-//         lv_obj_set_style_arc_color(arc, lv_color_hex(outline_hex), LV_PART_MAIN);
-
-//         lv_obj_set_style_arc_opa(arc, LV_OPA_0, LV_PART_INDICATOR);
-//         lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
-//         lv_obj_set_style_border_width(arc, 0, 0);
-
-//         lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
-//     }
-
-//     // Center hub (small circle)
-//     lv_obj_t *hub = lv_obj_create(cont);
-//     int hub_sz = size_px / 5;
-//     lv_obj_set_size(hub, hub_sz, hub_sz);
-//     lv_obj_center(hub);
-//     lv_obj_set_style_radius(hub, LV_RADIUS_CIRCLE, 0);
-//     lv_obj_set_style_bg_color(hub, lv_color_hex(outline_hex), 0);
-//     lv_obj_set_style_bg_opa(hub, LV_OPA_COVER, 0);
-//     lv_obj_set_style_border_width(hub, 0, 0);
-//     lv_obj_clear_flag(hub, LV_OBJ_FLAG_SCROLLABLE);
-//     lv_obj_clear_flag(hub, LV_OBJ_FLAG_CLICKABLE);
-
-//     return cont;
-// }
+// ======================================================
+// FAN ICON
+// ======================================================
 static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex)
 {
     lv_obj_t *cont = lv_obj_create(parent);
@@ -373,10 +364,11 @@ static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_CLICKABLE);
 
-    const int blade_r = size_px / 2 - 5;           // Slightly inset from edge
-    const int arc_w   = 8;                       // Blade thickness
-    const int blade_angle_span = 50;              // Short blades with good spacing between them
+    const int blade_r = size_px / 2 - 5;
+    const int arc_w   = 8;
+    const int blade_angle_span = 50;
 
+    // Three blades
     for (int i = 0; i < 3; i++)
     {
         int start_angle = i * 120;
@@ -397,21 +389,24 @@ static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline
         lv_obj_clear_flag(blade, LV_OBJ_FLAG_CLICKABLE);
     }
 
-    // Center hub
-    lv_obj_t *hub = lv_obj_create(cont);
-    int hub_sz = size_px / 4;                      // Adjust if you want smaller/bigger
-    lv_obj_set_size(hub, hub_sz, hub_sz);
-    lv_obj_center(hub);
-    lv_obj_set_style_radius(hub, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(hub, lv_color_hex(outline_hex), 0);
-    lv_obj_set_style_bg_opa(hub, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(hub, 0, 0);
-    lv_obj_clear_flag(hub, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(hub, LV_OBJ_FLAG_CLICKABLE);
+    // Center ring using lv_arc — perfect smooth hollow circle, no artifacts
+    lv_obj_t *center_ring = lv_arc_create(cont);
+    int ring_radius = size_px / 5;  // Adjust size: larger = bigger ring
+    lv_obj_set_size(center_ring, ring_radius * 2, ring_radius * 2);
+    lv_obj_center(center_ring);
+
+    lv_arc_set_bg_angles(center_ring, 0, 360);  // Full circle
+    lv_obj_set_style_arc_width(center_ring, 3, LV_PART_MAIN);  // Ring thickness (2-5 looks good)
+    lv_obj_set_style_arc_color(center_ring, lv_color_hex(outline_hex), LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(center_ring, LV_OPA_COVER, LV_PART_MAIN);
+
+    lv_obj_set_style_arc_opa(center_ring, LV_OPA_0, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(center_ring, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_border_width(center_ring, 0, 0);
+    lv_obj_clear_flag(center_ring, LV_OBJ_FLAG_CLICKABLE);
 
     return cont;
 }
-
 
 // ---------- Power button ----------
 static void power_btn_update()
@@ -486,7 +481,7 @@ static void popup_open(lv_obj_t *parent)
 
     lv_obj_t *num = lv_label_create(panel);
     lv_obj_set_style_text_color(num, lv_color_hex(COL_TEXT), 0);
-    lv_obj_set_style_text_font(num, &lv_font_montserrat_48, 0); // remove if missing
+    lv_obj_set_style_text_font(num, &lv_font_montserrat_48, 0);
     lv_obj_align(num, LV_ALIGN_CENTER, 0, -6);
     set_label_u8(num, vent_step);
 
@@ -519,3 +514,59 @@ static inline void on_step_tapped(lv_event_t *e)
     popup_open(tile);
 }
 
+static void wifi_icon_create(lv_obj_t *parent,
+                             int right_margin,
+                             uint32_t inactive_hex)
+{
+    const int bar_w = 5;
+    const int bar_spacing = 3;
+    const int bar_h[4] = {6, 10, 14, 18};
+
+    const int count = 4;
+    const int total_w = count * bar_w + (count - 1) * bar_spacing;   // 29
+    const int max_h = bar_h[3];                                      // 18
+
+    // Container for the icon (pad=0 => stable coordinates)
+    lv_obj_t *c = lv_obj_create(parent);
+    wifi_icon.cont = c;
+    wifi_icon.last_level = 255;
+
+    lv_obj_set_size(c, total_w, max_h);
+    lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(c, 0, 0);
+    lv_obj_set_style_pad_all(c, 0, 0);
+    lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(c, LV_OBJ_FLAG_CLICKABLE);
+
+    // Place it in the top bar: right side, vertically centered
+    lv_obj_align(c, LV_ALIGN_RIGHT_MID, -right_margin, 0);
+
+    // Bars
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *b = lv_obj_create(c);
+        wifi_icon.bar[i] = b;
+
+        lv_obj_set_size(b, bar_w, bar_h[i]);
+        lv_obj_set_pos(b, i * (bar_w + bar_spacing), max_h - bar_h[i]); // bottom aligned
+        lv_obj_set_style_radius(b, 2, 0);
+        lv_obj_set_style_border_width(b, 0, 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(inactive_hex), 0);
+        lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    }
+}
+
+static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t inactive_hex)
+{
+    if (level > 4) level = 4;
+    if (wifi_icon.last_level == level) return;
+    wifi_icon.last_level = level;
+
+    for (int i = 0; i < 4; i++) {
+        const bool on = (i < level);
+        lv_obj_set_style_bg_color(wifi_icon.bar[i],
+                                  lv_color_hex(on ? active_hex : inactive_hex),
+                                  0);
+    }
+}

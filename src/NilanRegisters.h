@@ -11,8 +11,7 @@
 #define NILAN_HOLDING_REG 0x03//((uint8_t)3)
 #define NILAN_INPUT_REG 0x04//((uint8_t)4)
 
-static const char *control_modes[] = {
-    "Off", "Heat", "Cool", "Auto", "Service"};
+static const char *control_modes[] = {"Off", "Heat", "Cool", "Auto", "Service"};
 
 static const char *control_states[] = {
     "Off", "Shift", "Stop", "Start", "Standby", "Ventilation Stop",
