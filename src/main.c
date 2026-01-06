@@ -31,7 +31,6 @@ void app_main()
     wifi_sta_start();
     nilan_modbus_start();
 
-
     while (1)
     {
 

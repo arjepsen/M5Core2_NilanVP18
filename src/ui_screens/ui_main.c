@@ -3,8 +3,9 @@
 #include "nilan_modbus.h"
 #include <math.h>
 #include <limits.h>
-
 #include "wifi_sta.h"   // for wifi strength
+
+#include "esp_log.h"
 
 // ---------- Layout constants for 320x240 ----------
 #define TOP_BAR_H 32
@@ -23,6 +24,8 @@
 #define COL_TEXT_DIM 0xB0B0B0
 #define COL_BTN_BG 0x262B30
 #define COL_BTN_EDGE 0x3A3A3A
+#define COL_WIFI_BAR_OFF 0x404040
+#define COL_WIFI_BAR_ON 0xB0B0B0
 
 // Tank shell
 #define COL_TANK_SHELL 0x2F2F2F
@@ -47,10 +50,15 @@ static lv_obj_t *tank_water_gradient = NULL; // water gradient rect
 typedef struct {
     lv_obj_t *cont;
     lv_obj_t *bar[4];
-    uint8_t last_level;   // 0..4, 255 = invalid
+    //uint8_t last_level;   // 0..4, 255 = invalid
+    wifi_strength_t last_level; // enumeration in wifi_sta.h
 } wifi_icon_t;
 
+static lv_color_t wifi_bar_on_color;
+static lv_color_t wifi_bar_off_color;
+
 static wifi_icon_t wifi_icon = {0};
+
 
 typedef struct {
     uint32_t color_hex;
@@ -83,7 +91,8 @@ static void popup_step_minus(lv_event_t *e);
 static void popup_step_plus(lv_event_t *e);
 static void popup_open(lv_obj_t *parent);
 static void wifi_icon_create(lv_obj_t *parent, int right_margin, uint32_t inactive_hex);
-static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t inactive_hex);
+//static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t inactive_hex);
+static void wifi_icon_set_level(wifi_strength_t strength);
 
 // static void fan_draw_cb(lv_event_t *e);
 // static void fan_delete_cb(lv_event_t *e);
@@ -110,7 +119,7 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_set_style_bg_opa(top, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(top, 0, 0);
     lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
-lv_obj_set_style_pad_all(top, 0, 0);   // kills theme padding
+    lv_obj_set_style_pad_all(top, 0, 0);   // kills theme padding
 
     // Service on the left
     lv_obj_t *lbl_mode = lv_label_create(top);
@@ -127,11 +136,18 @@ lv_obj_set_style_pad_all(top, 0, 0);   // kills theme padding
     lv_obj_align(lbl_time, LV_ALIGN_CENTER, 0, 0);
 
 
-lv_obj_set_style_pad_all(top, 0, 0);          // recommended
-wifi_icon_create(top, 20, 0x404040);          // right margin 20, inactive color
-// wifi_icon_set_level(3, COL_TEXT_DIM, 0x404040); // example: 3 bars active
-uint8_t initial_level = (wifi_sta_get_signal_strength() == WIFI_STRENGTH_DISCONNECTED) ? 0 : (uint8_t)wifi_sta_get_signal_strength();
-wifi_icon_set_level(initial_level, COL_TEXT_DIM, 0x404040);
+    // Wifi Icon
+    // First calculate lv_colors
+    wifi_bar_on_color = lv_color_hex(COL_WIFI_BAR_ON);
+    wifi_bar_off_color = lv_color_hex(COL_WIFI_BAR_ON);
+
+    // Draw the icon.
+    lv_obj_set_style_pad_all(top, 0, 0);          // recommended
+    wifi_icon_create(top, 20, COL_WIFI_BAR_OFF);          // right margin 20, inactive color
+    // wifi_icon_set_level(3, COL_TEXT_DIM, 0x404040); // example: 3 bars active
+    // uint8_t initial_level = (wifi_sta_get_signal_strength() == WIFI_STRENGTH_DISCONNECTED) ? 0 : (uint8_t)wifi_sta_get_signal_strength();
+    // wifi_icon_set_level(initial_level, COL_TEXT_DIM, 0x404040);
+    wifi_icon_set_level(wifi_sta_get_signal_strength());
 
 
     // ---------- Main area containers ----------
@@ -310,30 +326,39 @@ static void main_status_timer_cb(lv_timer_t *t)
 {
     LV_UNUSED(t);
 
-    if (!tank_water_gradient || !labl_tank_top || !labl_tank_bottom) return;
+    //if (!tank_water_gradient || !labl_tank_top || !labl_tank_bottom) return;
 
-    int16_t top_centiC = nilan_get_tank_top_cC();
-    int16_t bottom_centiC = nilan_get_tank_bottom_cC();
+    if (tank_water_gradient && labl_tank_top && labl_tank_bottom)
+    {
+        int16_t top_centiC = nilan_get_tank_top_cC();
+        int16_t bottom_centiC = nilan_get_tank_bottom_cC();
 
-    int16_t top_C = (int16_t)(((int32_t)top_centiC * 5243) >> 19);
-    int16_t bottom_C = (int16_t)(((int32_t)bottom_centiC * 5243) >> 19);
+        int16_t top_C = (int16_t)(((int32_t)top_centiC * 5243) >> 19);
+        int16_t bottom_C = (int16_t)(((int32_t)bottom_centiC * 5243) >> 19);
 
-    static int16_t last_top_C = INT16_MIN;
-    static int16_t last_bottom_C = INT16_MIN;
+        static int16_t last_top_C = INT16_MIN;
+        static int16_t last_bottom_C = INT16_MIN;
 
-    if (top_C == last_top_C && bottom_C == last_bottom_C) return;
+        if (top_C != last_top_C || bottom_C != last_bottom_C)
+        {
 
-    last_top_C = top_C;
-    last_bottom_C = bottom_C;
+            last_top_C = top_C;
+            last_bottom_C = bottom_C;
 
-    set_label_temp(labl_tank_top, top_C);
-    set_label_temp(labl_tank_bottom, bottom_C);
-    tank_water_set_gradient(tank_water_gradient, top_C, bottom_C);
+            set_label_temp(labl_tank_top, top_C);
+            set_label_temp(labl_tank_bottom, bottom_C);
+            tank_water_set_gradient(tank_water_gradient, top_C, bottom_C);
+        }
+
+    }
 
     wifi_strength_t strength = wifi_sta_get_signal_strength();
-    uint8_t level = (strength == WIFI_STRENGTH_DISCONNECTED) ? 0 : (uint8_t)strength;
+    //uint8_t level = (strength == WIFI_STRENGTH_DISCONNECTED) ? 0 : (uint8_t)strength;
 
-    wifi_icon_set_level(level, COL_TEXT_DIM, 0x404040);
+//ESP_LOGI("KURT", "wifi level: %d", level);
+
+    //wifi_icon_set_level(level, COL_TEXT_DIM, 0x404040);
+    wifi_icon_set_level(strength);
 }
 
 // ======================================================
@@ -525,19 +550,34 @@ static void wifi_icon_create(lv_obj_t *parent,
     }
 }
 
-static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t inactive_hex)
-{
-    if (level > 4) level = 4;
-    if (wifi_icon.last_level == level) return;
-    wifi_icon.last_level = level;
+// static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t inactive_hex)
+// {
+//     if (level > 4) level = 4;
+//     if (wifi_icon.last_level == level) return;
+//     wifi_icon.last_level = level;
 
-    for (int i = 0; i < 4; i++) 
+//     for (int i = 0; i < 4; i++) 
+//     {
+//         const bool on = (i < level);
+//         lv_obj_set_style_bg_color(wifi_icon.bar[i],
+//                                   lv_color_hex(on ? active_hex : inactive_hex),
+//                                   0);
+//     }
+// }
+
+
+static void wifi_icon_set_level(wifi_strength_t strength)
+{
+    // Return if no change
+    if (wifi_icon.last_level == strength) return;
+
+    // Determine which bars should be shown as active
+    for (int i = 0; i < 4; i++)
     {
-        const bool on = (i < level);
-        lv_obj_set_style_bg_color(wifi_icon.bar[i],
-                                  lv_color_hex(on ? active_hex : inactive_hex),
-                                  0);
+        lv_color_t bar_color = (i < strength) ? wifi_bar_off_color : wifi_bar_on_color;
+        lv_obj_set_style_bg_color(wifi_icon.bar[i], bar_color, 0);
     }
+
 }
 
 

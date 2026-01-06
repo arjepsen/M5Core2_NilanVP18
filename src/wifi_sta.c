@@ -227,14 +227,16 @@ int8_t wifi_sta_get_rssi(void)
 
 static void update_wifi_strength()
 {
-    if (!wifi_sta_is_connected()) {
+    if (!wifi_sta_is_connected()) 
+    {
         current_strength = WIFI_STRENGTH_DISCONNECTED;
         current_rssi = 0;
         return;
     }
 
     wifi_ap_record_t ap_info;
-    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) 
+    {
         current_strength = WIFI_STRENGTH_DISCONNECTED;
         return;
     }
