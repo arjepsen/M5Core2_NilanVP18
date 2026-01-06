@@ -4,8 +4,6 @@
 #include <math.h>
 #include <limits.h>
 
-
-
 // ---------- Layout constants for 320x240 ----------
 #define TOP_BAR_H 32
 #define MAIN_H (240 - TOP_BAR_H)
@@ -52,8 +50,6 @@ typedef struct {
 
 static wifi_icon_t wifi_icon = {0};
 
-
-
 typedef struct {
     uint32_t color_hex;
 
@@ -87,9 +83,8 @@ static void popup_open(lv_obj_t *parent);
 static void wifi_icon_create(lv_obj_t *parent, int right_margin, uint32_t inactive_hex);
 static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t inactive_hex);
 
-
-static void fan_draw_cb(lv_event_t *e);
-static void fan_delete_cb(lv_event_t *e);
+// static void fan_draw_cb(lv_event_t *e);
+// static void fan_delete_cb(lv_event_t *e);
 static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex);
 
 static void fan_free_event_cb(lv_event_t * e);
@@ -105,7 +100,6 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
     lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
 
-
     // ---------- Top bar ----------
     lv_obj_t *top = lv_obj_create(tile);
     lv_obj_set_size(top, 320, 32);
@@ -115,9 +109,6 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_set_style_border_width(top, 0, 0);
     lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
 lv_obj_set_style_pad_all(top, 0, 0);   // kills theme padding
-
-
-
 
     // Service on the left
     lv_obj_t *lbl_mode = lv_label_create(top);
@@ -529,7 +520,8 @@ static void wifi_icon_set_level(uint8_t level, uint32_t active_hex, uint32_t ina
     if (wifi_icon.last_level == level) return;
     wifi_icon.last_level = level;
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++) 
+    {
         const bool on = (i < level);
         lv_obj_set_style_bg_color(wifi_icon.bar[i],
                                   lv_color_hex(on ? active_hex : inactive_hex),

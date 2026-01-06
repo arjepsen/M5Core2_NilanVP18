@@ -11,6 +11,8 @@
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 
+#include "secrets.h"
+
 static const char *TAG = "wifi_sta";
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -19,13 +21,13 @@ static const char *TAG = "wifi_sta";
 
 // -------- Defaults live HERE --------
 // Set via build_flags in platformio.ini.
-#ifndef WIFI_STA_DEFAULT_SSID
-#define WIFI_STA_DEFAULT_SSID "SSID"
-#endif
+// #ifndef WIFI_STA_DEFAULT_SSID
+// #define WIFI_STA_DEFAULT_SSID "SSID"
+// #endif
 
-#ifndef WIFI_STA_DEFAULT_PASS
-#define WIFI_STA_DEFAULT_PASS "PWD"
-#endif
+// #ifndef WIFI_STA_DEFAULT_PASS
+// #define WIFI_STA_DEFAULT_PASS "PWD"
+// #endif
 
 // How long wifi_sta_start() should wait before giving up (ms)
 #ifndef WIFI_STA_START_TIMEOUT_MS
