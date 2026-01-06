@@ -4,6 +4,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/timers.h"
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -19,21 +20,11 @@ static const char *TAG = "wifi_sta";
 #define WIFI_FAIL_BIT BIT1
 #define WIFI_MAX_RETRY 10
 
-// -------- Defaults live HERE --------
-// Set via build_flags in platformio.ini.
-// #ifndef WIFI_STA_DEFAULT_SSID
-// #define WIFI_STA_DEFAULT_SSID "SSID"
-// #endif
-
-// #ifndef WIFI_STA_DEFAULT_PASS
-// #define WIFI_STA_DEFAULT_PASS "PWD"
-// #endif
-
 // How long wifi_sta_start() should wait before giving up (ms)
 #ifndef WIFI_STA_START_TIMEOUT_MS
 #define WIFI_STA_START_TIMEOUT_MS 10000
 #endif
-// -----------------------------------
+
 
 static EventGroupHandle_t event = NULL;
 static esp_netif_t *netif = NULL;
@@ -42,6 +33,20 @@ static volatile bool connected = false;
 static volatile uint32_t ip_addr = 0;
 static int retry_count = 0;
 static bool wifi_initialized = false;
+static wifi_strength_t current_strength = WIFI_STRENGTH_DISCONNECTED;
+static int8_t current_rssi = 0;
+static TimerHandle_t wifi_strength_timer = NULL;
+
+
+// =========== PROTOTYPES ===================
+static void update_wifi_strength();
+static void wifi_sta_init_internal(const char *ssid, const char *pass);
+bool wifi_sta_is_connected();
+bool wifi_sta_wait_connected(uint32_t timeout_ms);
+uint32_t wifi_sta_get_ip_u32();
+bool wifi_sta_start();
+static void wifi_strength_timer_callback(TimerHandle_t xTimer);
+
 
 static void wifi_event_handler(void *arg,
                                esp_event_base_t event_base,
@@ -80,9 +85,16 @@ static void wifi_event_handler(void *arg,
         connected = true;
         retry_count = 0;
         xEventGroupSetBits(event, WIFI_CONNECTED_BIT);
+        update_wifi_strength(); // Immediate update on connect
 
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&e->ip_info.ip));
         return;
+    }
+    else
+    {
+        connected = false;
+        current_strength = WIFI_STRENGTH_DISCONNECTED;
+        current_rssi = 0;
     }
 }
 
@@ -113,8 +125,7 @@ static void wifi_sta_init_internal(const char *ssid, const char *pass)
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(ret);
 
     // Must be after event loop create
-    
-netif = esp_netif_create_default_wifi_sta();
+    netif = esp_netif_create_default_wifi_sta();
 
     // --- Wi-Fi driver init ---
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -141,7 +152,7 @@ netif = esp_netif_create_default_wifi_sta();
     ESP_LOGI(TAG, "Wi-Fi STA started, connecting to \"%s\"", ssid);
 }
 
-bool wifi_sta_start(void)
+bool wifi_sta_start()
 {
     wifi_sta_init_internal(WIFI_STA_DEFAULT_SSID, WIFI_STA_DEFAULT_PASS);
 
@@ -156,6 +167,24 @@ bool wifi_sta_start(void)
         ESP_LOGW(TAG, "Wi-Fi NOT connected (timeout %u ms)",
                  (unsigned)WIFI_STA_START_TIMEOUT_MS);
     }
+
+    // Create a 5-second FreeRTOS timer for checking connectivity
+    wifi_strength_timer = xTimerCreate(
+        "WiFiStrength",
+        pdMS_TO_TICKS(5000),     // period
+        pdTRUE,                  // auto-reload
+        NULL,
+        wifi_strength_timer_callback
+    );
+
+    if (wifi_strength_timer != NULL) 
+    {
+        xTimerStart(wifi_strength_timer, 0);
+    }
+
+    // Initial update
+    update_wifi_strength();
+
     return ok;
 }
 
@@ -174,12 +203,52 @@ bool wifi_sta_wait_connected(uint32_t timeout_ms)
     return (bits & WIFI_CONNECTED_BIT) != 0;
 }
 
-bool wifi_sta_is_connected(void)
+bool wifi_sta_is_connected()
 {
     return connected;
 }
 
-uint32_t wifi_sta_get_ip_u32(void)
+uint32_t wifi_sta_get_ip_u32()
 {
     return ip_addr;
+}
+
+
+// Getter functions
+wifi_strength_t wifi_sta_get_signal_strength()
+{
+    return current_strength;
+}
+
+int8_t wifi_sta_get_rssi(void)
+{
+    return current_rssi;
+}
+
+static void update_wifi_strength()
+{
+    if (!wifi_sta_is_connected()) {
+        current_strength = WIFI_STRENGTH_DISCONNECTED;
+        current_rssi = 0;
+        return;
+    }
+
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+        current_strength = WIFI_STRENGTH_DISCONNECTED;
+        return;
+    }
+
+    current_rssi = ap_info.rssi;
+
+    if (current_rssi >= -55)      current_strength = WIFI_STRENGTH_4;
+    else if (current_rssi >= -65) current_strength = WIFI_STRENGTH_3;
+    else if (current_rssi >= -75) current_strength = WIFI_STRENGTH_2;
+    else if (current_rssi >= -85) current_strength = WIFI_STRENGTH_1;
+    else                          current_strength = WIFI_STRENGTH_0;
+}
+
+static void wifi_strength_timer_callback(TimerHandle_t xTimer)
+{
+    update_wifi_strength();
 }

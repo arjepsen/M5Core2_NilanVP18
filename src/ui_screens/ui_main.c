@@ -4,6 +4,8 @@
 #include <math.h>
 #include <limits.h>
 
+#include "wifi_sta.h"   // for wifi strength
+
 // ---------- Layout constants for 320x240 ----------
 #define TOP_BAR_H 32
 #define MAIN_H (240 - TOP_BAR_H)
@@ -127,7 +129,9 @@ lv_obj_set_style_pad_all(top, 0, 0);   // kills theme padding
 
 lv_obj_set_style_pad_all(top, 0, 0);          // recommended
 wifi_icon_create(top, 20, 0x404040);          // right margin 20, inactive color
-wifi_icon_set_level(3, COL_TEXT_DIM, 0x404040); // example: 3 bars active
+// wifi_icon_set_level(3, COL_TEXT_DIM, 0x404040); // example: 3 bars active
+uint8_t initial_level = (wifi_sta_get_signal_strength() == WIFI_STRENGTH_DISCONNECTED) ? 0 : (uint8_t)wifi_sta_get_signal_strength();
+wifi_icon_set_level(initial_level, COL_TEXT_DIM, 0x404040);
 
 
     // ---------- Main area containers ----------
@@ -325,6 +329,11 @@ static void main_status_timer_cb(lv_timer_t *t)
     set_label_temp(labl_tank_top, top_C);
     set_label_temp(labl_tank_bottom, bottom_C);
     tank_water_set_gradient(tank_water_gradient, top_C, bottom_C);
+
+    wifi_strength_t strength = wifi_sta_get_signal_strength();
+    uint8_t level = (strength == WIFI_STRENGTH_DISCONNECTED) ? 0 : (uint8_t)strength;
+
+    wifi_icon_set_level(level, COL_TEXT_DIM, 0x404040);
 }
 
 // ======================================================
@@ -470,6 +479,8 @@ static inline void on_step_tapped(lv_event_t *e)
     lv_obj_t *tile = (lv_obj_t *)lv_event_get_user_data(e);
     popup_open(tile);
 }
+
+
 
 static void wifi_icon_create(lv_obj_t *parent,
                              int right_margin,

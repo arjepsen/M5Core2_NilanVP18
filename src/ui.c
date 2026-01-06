@@ -42,3 +42,4 @@ void ui_init(void)
 
     lvgl_port_unlock();
 }
+ 
