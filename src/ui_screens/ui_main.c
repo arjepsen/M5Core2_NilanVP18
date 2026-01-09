@@ -139,7 +139,7 @@ void ui_main_create(lv_obj_t *tile)
     // Wifi Icon
     // First calculate lv_colors
     wifi_bar_on_color = lv_color_hex(COL_WIFI_BAR_ON);
-    wifi_bar_off_color = lv_color_hex(COL_WIFI_BAR_ON);
+    wifi_bar_off_color = lv_color_hex(COL_WIFI_BAR_OFF);
 
     // Draw the icon.
     lv_obj_set_style_pad_all(top, 0, 0);          // recommended
@@ -574,10 +574,11 @@ static void wifi_icon_set_level(wifi_strength_t strength)
     // Determine which bars should be shown as active
     for (int i = 0; i < 4; i++)
     {
-        lv_color_t bar_color = (i < strength) ? wifi_bar_off_color : wifi_bar_on_color;
+        lv_color_t bar_color = (i < strength) ? wifi_bar_on_color : wifi_bar_off_color;
         lv_obj_set_style_bg_color(wifi_icon.bar[i], bar_color, 0);
     }
 
+    wifi_icon.last_level = strength;
 }
 
 
