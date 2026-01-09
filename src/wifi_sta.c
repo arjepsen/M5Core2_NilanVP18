@@ -1,18 +1,17 @@
 #include "wifi_sta.h"
-
-#include <string.h>
-
-#include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
-#include "freertos/timers.h"
-
+#include "RTC.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_sntp.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "freertos/timers.h"
 #include "nvs_flash.h"
-
 #include "secrets.h"
+#include "time.h"
+#include <string.h>
 
 static const char *TAG = "wifi_sta";
 
@@ -25,6 +24,8 @@ static const char *TAG = "wifi_sta";
 #define WIFI_STA_START_TIMEOUT_MS 10000
 #endif
 
+#define NTP_SERVER "pool.ntp.org"
+#define NTP_RESYNC_INTERVAL_MS 86400000 // 24 * 60 * 60 * 1000 - 24 hours in ms
 
 static EventGroupHandle_t event = NULL;
 static esp_netif_t *netif = NULL;
@@ -36,7 +37,7 @@ static bool wifi_initialized = false;
 static wifi_strength_t current_strength = WIFI_STRENGTH_DISCONNECTED;
 static int8_t current_rssi = 0;
 static TimerHandle_t wifi_strength_timer = NULL;
-
+static TimerHandle_t ntp_resync_timer = NULL;
 
 // =========== PROTOTYPES ===================
 static void update_wifi_strength();
@@ -46,7 +47,6 @@ bool wifi_sta_wait_connected(uint32_t timeout_ms);
 uint32_t wifi_sta_get_ip_u32();
 bool wifi_sta_start();
 static void wifi_strength_timer_callback(TimerHandle_t xTimer);
-
 
 static void wifi_event_handler(void *arg,
                                esp_event_base_t event_base,
@@ -86,6 +86,21 @@ static void wifi_event_handler(void *arg,
         retry_count = 0;
         xEventGroupSetBits(event, WIFI_CONNECTED_BIT);
         update_wifi_strength(); // Immediate update on connect
+        sync_time_from_ntp();   // Sync time immediately on connect.
+
+        // Now, start periodic resync timer (if not running)
+        if (ntp_resync_timer == NULL)
+        {
+            ntp_resync_timer = xTimerCreate("NTPResync",
+                                            pdMS_TO_TICKS(NTP_RESYNC_INTERVAL_MS),
+                                            pdTRUE, // Auto-reload
+                                            NULL,
+                                            ntp_resync_timer_callback);
+            if (ntp_resync_timer != NULL)
+            {
+                xTimerStart(ntp_resync_timer, 0);
+            }
+        }
 
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&e->ip_info.ip));
         return;
@@ -171,13 +186,12 @@ bool wifi_sta_start()
     // Create a 5-second FreeRTOS timer for checking connectivity
     wifi_strength_timer = xTimerCreate(
         "WiFiStrength",
-        pdMS_TO_TICKS(5000),     // period
-        pdTRUE,                  // auto-reload
+        pdMS_TO_TICKS(5000), // period
+        pdTRUE,              // auto-reload
         NULL,
-        wifi_strength_timer_callback
-    );
+        wifi_strength_timer_callback);
 
-    if (wifi_strength_timer != NULL) 
+    if (wifi_strength_timer != NULL)
     {
         xTimerStart(wifi_strength_timer, 0);
     }
@@ -213,7 +227,6 @@ uint32_t wifi_sta_get_ip_u32()
     return ip_addr;
 }
 
-
 // Getter functions
 wifi_strength_t wifi_sta_get_signal_strength()
 {
@@ -227,7 +240,7 @@ int8_t wifi_sta_get_rssi(void)
 
 static void update_wifi_strength()
 {
-    if (!wifi_sta_is_connected()) 
+    if (!wifi_sta_is_connected())
     {
         current_strength = WIFI_STRENGTH_DISCONNECTED;
         current_rssi = 0;
@@ -235,7 +248,7 @@ static void update_wifi_strength()
     }
 
     wifi_ap_record_t ap_info;
-    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) 
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK)
     {
         current_strength = WIFI_STRENGTH_DISCONNECTED;
         return;
@@ -243,14 +256,70 @@ static void update_wifi_strength()
 
     current_rssi = ap_info.rssi;
 
-    if (current_rssi >= -55)      current_strength = WIFI_STRENGTH_4;
-    else if (current_rssi >= -65) current_strength = WIFI_STRENGTH_3;
-    else if (current_rssi >= -75) current_strength = WIFI_STRENGTH_2;
-    else if (current_rssi >= -85) current_strength = WIFI_STRENGTH_1;
-    else                          current_strength = WIFI_STRENGTH_0;
+    if (current_rssi >= -55)
+        current_strength = WIFI_STRENGTH_4;
+    else if (current_rssi >= -65)
+        current_strength = WIFI_STRENGTH_3;
+    else if (current_rssi >= -75)
+        current_strength = WIFI_STRENGTH_2;
+    else if (current_rssi >= -85)
+        current_strength = WIFI_STRENGTH_1;
+    else
+        current_strength = WIFI_STRENGTH_0;
 }
 
 static void wifi_strength_timer_callback(TimerHandle_t xTimer)
 {
     update_wifi_strength();
+}
+
+// Forward declare if needed (from RTC.h)
+extern void core2_RTC_SetTime(struct tm *time_info); // Adjust if your RTC lib uses different sig
+
+static void sync_time_from_ntp()
+{
+    // Init SNTP if not already
+    if (!esp_sntp_enabled())
+    {
+        esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+        esp_sntp_setservername(0, NTP_SERVER);
+        esp_sntp_init();
+    }
+
+    // Wait for sync (up to 10s)
+    time_t now = 0;
+    struct tm timeinfo = {0};
+    int retry = 0;
+    const int retry_max = 10;
+    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_max)
+    {
+        ESP_LOGI(TAG, "Waiting for NTP sync (%d/%d)...", retry, retry_max);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    if (retry < retry_max)
+    {
+        time(&now);
+        localtime_r(&now, &timeinfo);
+
+        // Set system timezone if needed (e.g., for Denmark)
+        setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); // CET/CEST (adjust for user location)
+        tzset();
+
+        // Update RTC from system time
+        core2_RTC_SetTime(&timeinfo); // Or your RTC set function
+        ESP_LOGI(TAG, "Time synced from NTP: %s", asctime(&timeinfo));
+    }
+    else
+    {
+        ESP_LOGW(TAG, "NTP sync failed");
+    }
+}
+
+static void ntp_resync_timer_callback(TimerHandle_t xTimer)
+{
+    if (wifi_sta_is_connected())
+    {
+        sync_time_from_ntp();
+    }
 }

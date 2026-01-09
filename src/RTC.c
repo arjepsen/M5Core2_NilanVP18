@@ -23,8 +23,6 @@ static inline uint8_t bin_to_bcd(uint8_t bin);
 // static inline esp_err_t rtc_read(uint8_t reg, uint8_t *data, size_t len);
 // static inline esp_err_t rtc_write(uint8_t reg, const uint8_t *data, size_t len);
 
-
-
 void core2_RTC_init()
 {
     if (rtc_initialized)
@@ -101,18 +99,3 @@ static inline uint8_t bin_to_bcd(uint8_t bin)
     return (uint8_t)(((bin / 10) << 4) | (bin % 10));
 }
 
-// static inline esp_err_t rtc_read(uint8_t reg, uint8_t *data, size_t len)
-// {
-//     return i2c_master_transmit_receive(rtc_handle, &reg, 1, data, len, -1);
-// }
-
-// static inline esp_err_t rtc_write(uint8_t reg, const uint8_t *data, size_t len)
-// {
-//     uint8_t buf[1 + 8];
-//     buf[0] = reg;
-//     for (size_t i = 0; i < len; i++) 
-//     {
-//         buf[1 + i] = data[i];
-        
-//     return i2c_master_transmit(s_rtc, buf, 1 + len, -1);
-// }
