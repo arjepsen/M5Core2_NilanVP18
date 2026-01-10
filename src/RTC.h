@@ -2,6 +2,7 @@
 #define RTC_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 // --- RTC (BM8563 / PCF8563 compatible) ---
 typedef struct {
@@ -15,5 +16,6 @@ typedef struct {
 } rtc_time_t;
 
 void core2_RTC_init();
+bool rtc_set_time(const rtc_time_t *time_ptr);
 
 #endif /* RTC_H */

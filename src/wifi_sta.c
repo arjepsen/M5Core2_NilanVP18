@@ -13,6 +13,7 @@
 #include "time.h"
 #include <string.h>
 
+
 static const char *TAG = "wifi_sta";
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -25,7 +26,7 @@ static const char *TAG = "wifi_sta";
 #endif
 
 #define NTP_SERVER "pool.ntp.org"
-#define NTP_RESYNC_INTERVAL_MS 86400000 // 24 * 60 * 60 * 1000 - 24 hours in ms
+
 
 static EventGroupHandle_t event = NULL;
 static esp_netif_t *netif = NULL;
@@ -37,7 +38,6 @@ static bool wifi_initialized = false;
 static wifi_strength_t current_strength = WIFI_STRENGTH_DISCONNECTED;
 static int8_t current_rssi = 0;
 static TimerHandle_t wifi_strength_timer = NULL;
-static TimerHandle_t ntp_resync_timer = NULL;
 
 // =========== PROTOTYPES ===================
 static void update_wifi_strength();
@@ -48,6 +48,11 @@ uint32_t wifi_sta_get_ip_u32();
 bool wifi_sta_start();
 static void wifi_strength_timer_callback(TimerHandle_t xTimer);
 
+// Forward declarations
+static void init_sntp(void);
+static void time_sync_notification_cb(struct timeval *tv);
+
+// ============= IMPLEMENTATIONS ===============================
 static void wifi_event_handler(void *arg,
                                esp_event_base_t event_base,
                                int32_t event_id,
@@ -86,21 +91,8 @@ static void wifi_event_handler(void *arg,
         retry_count = 0;
         xEventGroupSetBits(event, WIFI_CONNECTED_BIT);
         update_wifi_strength(); // Immediate update on connect
-        sync_time_from_ntp();   // Sync time immediately on connect.
 
-        // Now, start periodic resync timer (if not running)
-        if (ntp_resync_timer == NULL)
-        {
-            ntp_resync_timer = xTimerCreate("NTPResync",
-                                            pdMS_TO_TICKS(NTP_RESYNC_INTERVAL_MS),
-                                            pdTRUE, // Auto-reload
-                                            NULL,
-                                            ntp_resync_timer_callback);
-            if (ntp_resync_timer != NULL)
-            {
-                xTimerStart(ntp_resync_timer, 0);
-            }
-        }
+        init_sntp(); // Start non-blocking SNTP
 
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&e->ip_info.ip));
         return;
@@ -273,53 +265,56 @@ static void wifi_strength_timer_callback(TimerHandle_t xTimer)
     update_wifi_strength();
 }
 
-// Forward declare if needed (from RTC.h)
-extern void core2_RTC_SetTime(struct tm *time_info); // Adjust if your RTC lib uses different sig
-
-static void sync_time_from_ntp()
+// Non-blocking SNTP initialization
+static void init_sntp(void)
 {
-    // Init SNTP if not already
-    if (!esp_sntp_enabled())
+    if (esp_sntp_enabled())
     {
-        esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-        esp_sntp_setservername(0, NTP_SERVER);
-        esp_sntp_init();
+        ESP_LOGI(TAG, "SNTP already enabled");
+        return;
     }
 
-    // Wait for sync (up to 10s)
-    time_t now = 0;
-    struct tm timeinfo = {0};
-    int retry = 0;
-    const int retry_max = 10;
-    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_max)
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, NTP_SERVER);
+    esp_sntp_set_time_sync_notification_cb(time_sync_notification_cb);
+    esp_sntp_init();
+
+    ESP_LOGI(TAG, "SNTP initialized - waiting for background sync");
+}
+
+// Called automatically when NTP sync succeeds
+static void time_sync_notification_cb(struct timeval *tv)
+{
+    ESP_LOGI(TAG, "NTP time synchronized!");
+
+    time_t now;
+    time(&now);
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+
+    // Set system timezone (CET/CEST for Denmark)
+    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+    tzset();
+
+    // Update RTC
+    rtc_time_t rtc_time = {
+        .sec = (uint8_t)timeinfo.tm_sec,
+        .min = (uint8_t)timeinfo.tm_min,
+        .hour = (uint8_t)timeinfo.tm_hour,
+        .day = (uint8_t)timeinfo.tm_mday,
+        .wday = (uint8_t)timeinfo.tm_wday,
+        .month = (uint8_t)(timeinfo.tm_mon + 1),
+        .year = (uint16_t)(timeinfo.tm_year + 1900)};
+
+    if (rtc_set_time(&rtc_time))
     {
-        ESP_LOGI(TAG, "Waiting for NTP sync (%d/%d)...", retry, retry_max);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-
-    if (retry < retry_max)
-    {
-        time(&now);
-        localtime_r(&now, &timeinfo);
-
-        // Set system timezone if needed (e.g., for Denmark)
-        setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); // CET/CEST (adjust for user location)
-        tzset();
-
-        // Update RTC from system time
-        core2_RTC_SetTime(&timeinfo); // Or your RTC set function
-        ESP_LOGI(TAG, "Time synced from NTP: %s", asctime(&timeinfo));
+        ESP_LOGI(TAG, "RTC updated successfully from NTP");
     }
     else
     {
-        ESP_LOGW(TAG, "NTP sync failed");
+        ESP_LOGE(TAG, "RTC update failed");
     }
+
+    ESP_LOGI(TAG, "Time synced: %s", asctime(&timeinfo));
 }
 
-static void ntp_resync_timer_callback(TimerHandle_t xTimer)
-{
-    if (wifi_sta_is_connected())
-    {
-        sync_time_from_ntp();
-    }
-}

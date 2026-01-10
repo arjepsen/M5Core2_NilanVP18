@@ -4,6 +4,7 @@
 #include "wifi_sta.h" // for wifi strength
 #include <limits.h>
 #include <math.h>
+#include <time.h>
 
 #include "esp_log.h"
 
@@ -40,6 +41,7 @@ static lv_obj_t *labl_step = NULL;
 static lv_obj_t *labl_tank_top = NULL;
 static lv_obj_t *labl_tank_bottom = NULL;
 static lv_obj_t *labl_power = NULL;
+static lv_obj_t *labl_time = NULL;
 
 // Popup handle (lazy-created)
 static lv_obj_t *step_popup = NULL;
@@ -123,11 +125,11 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_align(lbl_mode, LV_ALIGN_LEFT_MID, 10, 0);
 
     // Clock in the center
-    lv_obj_t *lbl_time = lv_label_create(top);
-    lv_label_set_text(lbl_time, "22:45");
-    lv_obj_set_style_text_color(lbl_time, lv_color_hex(COL_TEXT), 0);
-    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_22, 0);
-    lv_obj_align(lbl_time, LV_ALIGN_CENTER, 0, 0);
+    labl_time = lv_label_create(top);
+    lv_label_set_text(labl_time, "--:--");
+    lv_obj_set_style_text_color(labl_time, lv_color_hex(COL_TEXT), 0);
+    lv_obj_set_style_text_font(labl_time, &lv_font_montserrat_22, 0);
+    lv_obj_align(labl_time, LV_ALIGN_CENTER, 0, 0);
 
     // Wifi Icon
     wifi_bar_on_color = lv_color_hex(COL_WIFI_BAR_ON);
@@ -257,6 +259,56 @@ void ui_main_create(lv_obj_t *tile)
 }
 
 // ===============================================================
+// MAIN SCREEN UPDATER (callback)
+// ===============================================================
+
+static void main_status_timer_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+
+    // if (!tank_water_gradient || !labl_tank_top || !labl_tank_bottom) return;
+
+    if (tank_water_gradient && labl_tank_top && labl_tank_bottom)
+    {
+        int16_t top_centiC = nilan_get_tank_top_cC();
+        int16_t bottom_centiC = nilan_get_tank_bottom_cC();
+
+        int16_t top_C = (int16_t)(((int32_t)top_centiC * 5243) >> 19);
+        int16_t bottom_C = (int16_t)(((int32_t)bottom_centiC * 5243) >> 19);
+
+        static int16_t last_top_C = INT16_MIN;
+        static int16_t last_bottom_C = INT16_MIN;
+
+        if (top_C != last_top_C || bottom_C != last_bottom_C)
+        {
+
+            last_top_C = top_C;
+            last_bottom_C = bottom_C;
+
+            set_label_temp(labl_tank_top, top_C);
+            set_label_temp(labl_tank_bottom, bottom_C);
+            tank_water_set_gradient(tank_water_gradient, top_C, bottom_C);
+        }
+    }
+
+    wifi_strength_t strength = wifi_sta_get_signal_strength();
+    wifi_icon_set_level(strength);
+
+    // Update clock label from system time (NTP-synced)
+    time_t now;
+    time(&now);
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+
+    char time_buf[6];  // "HH:MM\0"
+    strftime(time_buf, sizeof(time_buf), "%H:%M", &timeinfo);
+
+    lv_label_set_text(labl_time, time_buf);
+
+}
+
+
+// ===============================================================
 // HELPERS
 // ===============================================================
 
@@ -308,38 +360,7 @@ static void tank_water_set_gradient(lv_obj_t *water, int top_c, int bot_c)
     lv_obj_set_style_bg_opa(water, LV_OPA_COVER, 0);
 }
 
-static void main_status_timer_cb(lv_timer_t *t)
-{
-    LV_UNUSED(t);
 
-    // if (!tank_water_gradient || !labl_tank_top || !labl_tank_bottom) return;
-
-    if (tank_water_gradient && labl_tank_top && labl_tank_bottom)
-    {
-        int16_t top_centiC = nilan_get_tank_top_cC();
-        int16_t bottom_centiC = nilan_get_tank_bottom_cC();
-
-        int16_t top_C = (int16_t)(((int32_t)top_centiC * 5243) >> 19);
-        int16_t bottom_C = (int16_t)(((int32_t)bottom_centiC * 5243) >> 19);
-
-        static int16_t last_top_C = INT16_MIN;
-        static int16_t last_bottom_C = INT16_MIN;
-
-        if (top_C != last_top_C || bottom_C != last_bottom_C)
-        {
-
-            last_top_C = top_C;
-            last_bottom_C = bottom_C;
-
-            set_label_temp(labl_tank_top, top_C);
-            set_label_temp(labl_tank_bottom, bottom_C);
-            tank_water_set_gradient(tank_water_gradient, top_C, bottom_C);
-        }
-    }
-
-    wifi_strength_t strength = wifi_sta_get_signal_strength();
-    wifi_icon_set_level(strength);
-}
 
 // ======================================================
 // FAN ICON (FAST: single object draws hub + 4 blades)
