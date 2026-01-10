@@ -20,8 +20,7 @@ bool rtc_initialized = false;
 
 static inline uint8_t bcd_to_bin(uint8_t bcd);
 static inline uint8_t bin_to_bcd(uint8_t bin);
-// static inline esp_err_t rtc_read(uint8_t reg, uint8_t *data, size_t len);
-// static inline esp_err_t rtc_write(uint8_t reg, const uint8_t *data, size_t len);
+
 
 void core2_RTC_init()
 {

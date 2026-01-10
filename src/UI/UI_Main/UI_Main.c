@@ -1,10 +1,12 @@
-#include "ui_main.h"
+#include "UI_Main.h"
+#include "UI_Main_TopBar.h"
 #include "lvgl.h"
-#include "nilan_modbus.h"
-#include "wifi_sta.h" // for wifi strength
+#include "../../nilan_modbus.h"
+#include "../../wifi_sta.h" // for wifi strength
 #include <limits.h>
 #include <math.h>
 #include <time.h>
+#include "../UI_Shared_Colors.h"
 
 #include "esp_log.h"
 
@@ -19,18 +21,18 @@
 #define PAD_TIGHT 4
 
 // ---------- Colors ----------
-#define COL_BG 0x202020
-#define COL_TOPBAR 0x3A291C
-#define COL_TEXT 0xFFFFFF
-#define COL_TEXT_DIM 0xB0B0B0
-#define COL_BTN_BG 0x262B30
-#define COL_BTN_EDGE 0x3A3A3A
-#define COL_WIFI_BAR_OFF 0x404040
-#define COL_WIFI_BAR_ON 0xB0B0B0
+// #define COL_BG 0x202020
+// #define COL_TOPBAR 0x3A291C
+// #define COL_TEXT 0xFFFFFF
+// #define COL_TEXT_DIM 0xB0B0B0
+// #define COL_BTN_BG 0x262B30
+// #define COL_BTN_EDGE 0x3A3A3A
+// #define COL_WIFI_BAR_OFF 0x404040
+// #define COL_WIFI_BAR_ON 0xB0B0B0
 
-// Tank shell
-#define COL_TANK_SHELL 0x2F2F2F
-#define COL_TANK_BORDER 0x6A6A6A
+// // Tank shell
+// #define COL_TANK_SHELL 0x2F2F2F
+// #define COL_TANK_BORDER 0x6A6A6A
 
 // ---------- State ----------
 static int vent_step = 3;
@@ -92,11 +94,13 @@ static void popup_close();
 static void popup_step_minus(lv_event_t *e);
 static void popup_step_plus(lv_event_t *e);
 static void popup_open(lv_obj_t *parent);
-static void wifi_icon_create(lv_obj_t *parent, int right_margin, uint32_t inactive_hex);
-static void wifi_icon_set_level(wifi_strength_t strength);
+// static void wifi_icon_create(lv_obj_t *parent, int right_margin, uint32_t inactive_hex);
+// static void wifi_icon_set_level(wifi_strength_t strength);
 static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex);
 static void fan_free_event_cb(lv_event_t *e);
 static void fan_draw_event_cb(lv_event_t *e);
+
+
 
 // ======================================================
 // MAIN SCREEN
@@ -108,35 +112,37 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
 
     // ------------------- TOP BAR --------------------------
-    lv_obj_t *top = lv_obj_create(tile);
-    lv_obj_set_size(top, 320, 32);
-    lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(top, lv_color_hex(COL_TOPBAR), 0);
-    lv_obj_set_style_bg_opa(top, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(top, 0, 0);
-    lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(top, 0, 0); // kills theme padding
+    ui_top_bar_create(tile);
 
-    // Service on the left
-    lv_obj_t *lbl_mode = lv_label_create(top);
-    lv_label_set_text(lbl_mode, "Service");
-    lv_obj_set_style_text_color(lbl_mode, lv_color_hex(COL_TEXT_DIM), 0);
-    lv_obj_set_style_text_font(lbl_mode, &lv_font_montserrat_20, 0);
-    lv_obj_align(lbl_mode, LV_ALIGN_LEFT_MID, 10, 0);
+    // lv_obj_t *top = lv_obj_create(tile);
+    // lv_obj_set_size(top, 320, 32);
+    // lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
+    // lv_obj_set_style_bg_color(top, lv_color_hex(COL_TOPBAR), 0);
+    // lv_obj_set_style_bg_opa(top, LV_OPA_COVER, 0);
+    // lv_obj_set_style_border_width(top, 0, 0);
+    // lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+    // lv_obj_set_style_pad_all(top, 0, 0); // kills theme padding
 
-    // Clock in the center
-    labl_time = lv_label_create(top);
-    lv_label_set_text(labl_time, "--:--");
-    lv_obj_set_style_text_color(labl_time, lv_color_hex(COL_TEXT), 0);
-    lv_obj_set_style_text_font(labl_time, &lv_font_montserrat_22, 0);
-    lv_obj_align(labl_time, LV_ALIGN_CENTER, 0, 0);
+    // // Service on the left
+    // lv_obj_t *lbl_mode = lv_label_create(top);
+    // lv_label_set_text(lbl_mode, "Service");
+    // lv_obj_set_style_text_color(lbl_mode, lv_color_hex(COL_TEXT_DIM), 0);
+    // lv_obj_set_style_text_font(lbl_mode, &lv_font_montserrat_20, 0);
+    // lv_obj_align(lbl_mode, LV_ALIGN_LEFT_MID, 10, 0);
 
-    // Wifi Icon
-    wifi_bar_on_color = lv_color_hex(COL_WIFI_BAR_ON);
-    wifi_bar_off_color = lv_color_hex(COL_WIFI_BAR_OFF);
-    lv_obj_set_style_pad_all(top, 0, 0);
-    wifi_icon_create(top, 20, COL_WIFI_BAR_OFF); // right margin 20, inactive color
-    wifi_icon_set_level(wifi_sta_get_signal_strength());
+    // // Clock in the center
+    // labl_time = lv_label_create(top);
+    // lv_label_set_text(labl_time, "--:--");
+    // lv_obj_set_style_text_color(labl_time, lv_color_hex(COL_TEXT), 0);
+    // lv_obj_set_style_text_font(labl_time, &lv_font_montserrat_22, 0);
+    // lv_obj_align(labl_time, LV_ALIGN_CENTER, 0, 0);
+
+    // // Wifi Icon
+    // wifi_bar_on_color = lv_color_hex(COL_WIFI_BAR_ON);
+    // wifi_bar_off_color = lv_color_hex(COL_WIFI_BAR_OFF);
+    // lv_obj_set_style_pad_all(top, 0, 0);
+    // wifi_icon_create(top, 20, COL_WIFI_BAR_OFF); // right margin 20, inactive color
+    // wifi_icon_set_level(wifi_sta_get_signal_strength());
 
     // -------------- MAIN AREA CONTAINERS ------------------
     lv_obj_t *left = lv_obj_create(tile);
@@ -292,7 +298,8 @@ static void main_status_timer_cb(lv_timer_t *t)
     }
 
     wifi_strength_t strength = wifi_sta_get_signal_strength();
-    wifi_icon_set_level(strength);
+    //wifi_icon_set_level(strength);
+    ui_top_bar_update_wifi(strength);
 
     // Update clock label from system time (NTP-synced)
     time_t now;
@@ -505,64 +512,64 @@ static inline void on_step_tapped(lv_event_t *e)
     popup_open(tile);
 }
 
-static void wifi_icon_create(lv_obj_t *parent,
-                             int right_margin,
-                             uint32_t inactive_hex)
-{
-    const int bar_w = 5;
-    const int bar_spacing = 3;
-    const int bar_h[4] = {6, 10, 14, 18};
+// static void wifi_icon_create(lv_obj_t *parent,
+//                              int right_margin,
+//                              uint32_t inactive_hex)
+// {
+//     const int bar_w = 5;
+//     const int bar_spacing = 3;
+//     const int bar_h[4] = {6, 10, 14, 18};
 
-    const int count = 4;
-    const int total_w = count * bar_w + (count - 1) * bar_spacing; // 29
-    const int max_h = bar_h[3];                                    // 18
+//     const int count = 4;
+//     const int total_w = count * bar_w + (count - 1) * bar_spacing; // 29
+//     const int max_h = bar_h[3];                                    // 18
 
-    // Container for the icon (pad=0 => stable coordinates)
-    lv_obj_t *c = lv_obj_create(parent);
-    wifi_icon.cont = c;
-    wifi_icon.last_level = 255;
+//     // Container for the icon (pad=0 => stable coordinates)
+//     lv_obj_t *c = lv_obj_create(parent);
+//     wifi_icon.cont = c;
+//     wifi_icon.last_level = 255;
 
-    lv_obj_set_size(c, total_w, max_h);
-    lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(c, 0, 0);
-    lv_obj_set_style_pad_all(c, 0, 0);
-    lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(c, LV_OBJ_FLAG_CLICKABLE);
+//     lv_obj_set_size(c, total_w, max_h);
+//     lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
+//     lv_obj_set_style_border_width(c, 0, 0);
+//     lv_obj_set_style_pad_all(c, 0, 0);
+//     lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+//     lv_obj_clear_flag(c, LV_OBJ_FLAG_CLICKABLE);
 
-    // Place it in the top bar: right side, vertically centered
-    lv_obj_align(c, LV_ALIGN_RIGHT_MID, -right_margin, 0);
+//     // Place it in the top bar: right side, vertically centered
+//     lv_obj_align(c, LV_ALIGN_RIGHT_MID, -right_margin, 0);
 
-    // Bars
-    for (int i = 0; i < 4; i++)
-    {
-        lv_obj_t *b = lv_obj_create(c);
-        wifi_icon.bar[i] = b;
+//     // Bars
+//     for (int i = 0; i < 4; i++)
+//     {
+//         lv_obj_t *b = lv_obj_create(c);
+//         wifi_icon.bar[i] = b;
 
-        lv_obj_set_size(b, bar_w, bar_h[i]);
-        lv_obj_set_pos(b, i * (bar_w + bar_spacing), max_h - bar_h[i]); // bottom aligned
-        lv_obj_set_style_radius(b, 2, 0);
-        lv_obj_set_style_border_width(b, 0, 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(inactive_hex), 0);
-        lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE);
-    }
-}
+//         lv_obj_set_size(b, bar_w, bar_h[i]);
+//         lv_obj_set_pos(b, i * (bar_w + bar_spacing), max_h - bar_h[i]); // bottom aligned
+//         lv_obj_set_style_radius(b, 2, 0);
+//         lv_obj_set_style_border_width(b, 0, 0);
+//         lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+//         lv_obj_set_style_bg_color(b, lv_color_hex(inactive_hex), 0);
+//         lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+//         lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE);
+//     }
+// }
 
-static void wifi_icon_set_level(wifi_strength_t strength)
-{
-    // Return if no change
-    if (wifi_icon.last_level == strength) return;
+// static void wifi_icon_set_level(wifi_strength_t strength)
+// {
+//     // Return if no change
+//     if (wifi_icon.last_level == strength) return;
 
-    // Determine which bars should be shown as active
-    for (int i = 0; i < 4; i++)
-    {
-        lv_color_t bar_color = (i < strength) ? wifi_bar_on_color : wifi_bar_off_color;
-        lv_obj_set_style_bg_color(wifi_icon.bar[i], bar_color, 0);
-    }
+//     // Determine which bars should be shown as active
+//     for (int i = 0; i < 4; i++)
+//     {
+//         lv_color_t bar_color = (i < strength) ? wifi_bar_on_color : wifi_bar_off_color;
+//         lv_obj_set_style_bg_color(wifi_icon.bar[i], bar_color, 0);
+//     }
 
-    wifi_icon.last_level = strength;
-}
+//     wifi_icon.last_level = strength;
+// }
 
 static void fan_draw_event_cb(lv_event_t *e)
 {
@@ -626,3 +633,5 @@ static void fan_free_event_cb(lv_event_t *e)
     fan_draw_cfg_t *cfg = (fan_draw_cfg_t *)lv_event_get_user_data(e);
     if (cfg) lv_free(cfg);
 }
+
+

@@ -3,12 +3,12 @@
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
 
-#include "ui_screens/ui_main.h"
-#include "ui_screens/ui_modbus_debug.h"
+#include "UI/UI_Main/UI_Main.h"
+#include "UI/ui_modbus_debug.h"
 
 static lv_obj_t *tileview_obj = NULL;
 
-void ui_init(void)
+void ui_init()
 {
     lvgl_port_lock(0);
 

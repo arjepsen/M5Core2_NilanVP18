@@ -1,0 +1,14 @@
+#pragma once
+
+#define COL_BG 0x202020
+#define COL_TOPBAR 0x3A291C
+#define COL_TEXT 0xFFFFFF
+#define COL_TEXT_DIM 0xB0B0B0
+#define COL_BTN_BG 0x262B30
+#define COL_BTN_EDGE 0x3A3A3A
+#define COL_WIFI_BAR_OFF 0x404040
+#define COL_WIFI_BAR_ON 0xB0B0B0
+
+// Tank shell
+#define COL_TANK_SHELL 0x2F2F2F
+#define COL_TANK_BORDER 0x6A6A6A
