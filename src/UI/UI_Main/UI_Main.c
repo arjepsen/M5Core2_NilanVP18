@@ -1,24 +1,26 @@
 #include "UI_Main.h"
-#include "UI_Main_TopBar.h"
-#include "lvgl.h"
 #include "../../nilan_modbus.h"
 #include "../../wifi_sta.h" // for wifi strength
+#include "../UI_Shared_Colors.h"
+#include "UI_Main_Tank.h"
+#include "UI_Main_TopBar.h"
+#include "lvgl.h"
 #include <limits.h>
 #include <math.h>
 #include <time.h>
-#include "../UI_Shared_Colors.h"
 
 #include "esp_log.h"
 
 // ---------- Layout constants for 320x240 ----------
-#define TOP_BAR_H 32
-#define MAIN_H (240 - TOP_BAR_H)
+#define TOP_BAR_HEIGHT 32
+#define MAIN_HEIGHT (240 - TOP_BAR_HEIGHT)
 
-#define LEFT_W 128
-#define RIGHT_W (320 - LEFT_W)
+#define LEFT_WIDTH 160 //128
+#define HALF_SCREEN_WIDTH 160 // 320 / 2
+#define RIGHT_WIDTH (320 - LEFT_WIDTH)
 
-#define PAD 6
-#define PAD_TIGHT 4
+// #define PAD 6
+// #define PAD_TIGHT 4
 
 // ---------- State ----------
 static int vent_step = 3;
@@ -26,37 +28,21 @@ static bool power_on = true;
 
 // LVGL label objects we update
 static lv_obj_t *labl_step = NULL;
-static lv_obj_t *labl_tank_top = NULL;
-static lv_obj_t *labl_tank_bottom = NULL;
 static lv_obj_t *labl_power = NULL;
 
 // Popup handle (lazy-created)
 static lv_obj_t *step_popup = NULL;
 
-static lv_obj_t *tank_water_gradient = NULL; // water gradient rect
-
-// Wifi indicator
-typedef struct
-{
-    lv_obj_t *cont;
-    lv_obj_t *bar[4];
-    // uint8_t last_level;   // 0..4, 255 = invalid
-    wifi_strength_t last_level; // enumeration in wifi_sta.h
-} wifi_icon_t;
-
-static lv_color_t wifi_bar_on_color;
-static lv_color_t wifi_bar_off_color;
-static wifi_icon_t wifi_icon = {0};
 
 typedef struct
 {
     uint32_t color_hex;
     int16_t blade_off;  // px (e.g. 25)
     int16_t blade_diam; // px (e.g. size_px - 25)
-    int16_t hub_diam; // e.g. 35
+    int16_t hub_diam;   // e.g. 35
     uint8_t blade_w;    // arc width for blades
     uint8_t blade_span; // degrees (e.g. 50)
-    uint8_t hub_w;    // e.g. 3
+    uint8_t hub_w;      // e.g. 3
 } fan_draw_cfg_t;
 
 // ======================================================
@@ -64,11 +50,9 @@ typedef struct
 // ======================================================
 
 static inline void set_label_u8(lv_obj_t *label, int v);
-static inline void set_label_temp(lv_obj_t *label, int t_c);
 static inline void on_step_tapped(lv_event_t *e);
 static uint32_t lerp_rgb(uint32_t a, uint32_t b, uint8_t t /*0..255*/);
 static uint32_t temp_to_warm_color(int t_c);
-static void tank_water_set_gradient(lv_obj_t *water, int top_c, int bot_c);
 static void main_status_timer_cb(lv_timer_t *t);
 static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex);
 static void power_btn_update();
@@ -80,7 +64,6 @@ static void popup_open(lv_obj_t *parent);
 static lv_obj_t *fan_icon_create(lv_obj_t *parent, int size_px, uint32_t outline_hex);
 static void fan_free_event_cb(lv_event_t *e);
 static void fan_draw_event_cb(lv_event_t *e);
-
 
 // ======================================================
 // MAIN SCREEN
@@ -96,22 +79,22 @@ void ui_main_create(lv_obj_t *tile)
     ui_top_bar_create(tile);
 
     // -------------- MAIN AREA CONTAINERS ------------------
-    lv_obj_t *left = lv_obj_create(tile);
-    lv_obj_set_size(left, LEFT_W, MAIN_H);
-    lv_obj_align(left, LV_ALIGN_TOP_LEFT, 0, TOP_BAR_H);
-    lv_obj_set_style_bg_opa(left, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(left, 0, 0);
-    lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *left_container = lv_obj_create(tile);
+    lv_obj_set_size(left_container, HALF_SCREEN_WIDTH, MAIN_HEIGHT);
+    lv_obj_align(left_container, LV_ALIGN_TOP_LEFT, 0, TOP_BAR_HEIGHT);
+    lv_obj_set_style_bg_opa(left_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(left_container, 0, 0);
+    lv_obj_clear_flag(left_container, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *right = lv_obj_create(tile);
-    lv_obj_set_size(right, RIGHT_W, MAIN_H);
-    lv_obj_align(right, LV_ALIGN_TOP_LEFT, LEFT_W, TOP_BAR_H);
-    lv_obj_set_style_bg_opa(right, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(right, 0, 0);
-    lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *right_container = lv_obj_create(tile);
+    lv_obj_set_size(right_container, HALF_SCREEN_WIDTH, MAIN_HEIGHT);
+    lv_obj_align(right_container, LV_ALIGN_TOP_LEFT, HALF_SCREEN_WIDTH, TOP_BAR_HEIGHT);
+    lv_obj_set_style_bg_opa(right_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(right_container, 0, 0);
+    lv_obj_clear_flag(right_container, LV_OBJ_FLAG_SCROLLABLE);
 
     // -------------------- FAN ICON ------------------------
-    lv_obj_t *fan_card = lv_obj_create(left);
+    lv_obj_t *fan_card = lv_obj_create(left_container);
     lv_obj_set_size(fan_card, 80, 80);               // <<< Smaller card (was 96) — tighter outline
     lv_obj_align(fan_card, LV_ALIGN_TOP_MID, 0, 16); // Shift down a bit to keep centered vertically
     lv_obj_set_style_bg_opa(fan_card, LV_OPA_TRANSP, 0);
@@ -139,60 +122,7 @@ void ui_main_create(lv_obj_t *tile)
     lv_obj_add_event_cb(fan_card, on_step_tapped, LV_EVENT_CLICKED, tile);
 
     // ---------------------- TANK --------------------------
-    lv_obj_t *tank_wrap = lv_obj_create(right);
-    lv_obj_set_size(tank_wrap, RIGHT_W - PAD * 2, MAIN_H - PAD * 2);
-    lv_obj_align(tank_wrap, LV_ALIGN_TOP_MID, 0, PAD_TIGHT);
-    lv_obj_set_style_bg_opa(tank_wrap, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(tank_wrap, 0, 0);
-    lv_obj_clear_flag(tank_wrap, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *tank = lv_obj_create(tank_wrap);
-    lv_obj_set_size(tank, 86, 136);
-    lv_obj_align(tank, LV_ALIGN_CENTER, 30, 2);
-    lv_obj_clear_flag(tank, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_set_style_radius(tank, 14, 0);
-    lv_obj_set_style_border_width(tank, 2, 0);
-    lv_obj_set_style_border_color(tank, lv_color_hex(COL_TANK_BORDER), 0);
-    lv_obj_set_style_bg_color(tank, lv_color_hex(COL_TANK_SHELL), 0);
-    lv_obj_set_style_bg_opa(tank, LV_OPA_COVER, 0);
-
-    lv_obj_t *water = lv_obj_create(tank);
-    lv_obj_set_size(water, 76, 126);
-    lv_obj_center(water);
-    lv_obj_clear_flag(water, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_set_style_radius(water, 10, 0);
-    lv_obj_set_style_clip_corner(water, true, 0);
-    lv_obj_set_style_border_width(water, 0, 0);
-
-    labl_tank_top = lv_label_create(water);
-    lv_obj_set_style_text_color(labl_tank_top, lv_color_hex(COL_TEXT), 0);
-    lv_obj_set_style_text_font(labl_tank_top, &lv_font_montserrat_28, 0);
-    lv_obj_align(labl_tank_top, LV_ALIGN_TOP_MID, 0, 6);
-
-    labl_tank_bottom = lv_label_create(water);
-    lv_obj_set_style_text_color(labl_tank_bottom, lv_color_hex(COL_TEXT), 0);
-    lv_obj_set_style_text_font(labl_tank_bottom, &lv_font_montserrat_28, 0);
-    lv_obj_align(labl_tank_bottom, LV_ALIGN_BOTTOM_MID, 0, -6);
-
-    // Initial values from Modbus
-    int16_t init_top_cC = nilan_get_tank_top_cC();
-    int16_t init_bot_cC = nilan_get_tank_bottom_cC();
-    int init_top_c = init_top_cC / 100;
-    int init_bot_c = init_bot_cC / 100;
-
-    set_label_temp(labl_tank_top, init_top_c);
-    set_label_temp(labl_tank_bottom, init_bot_c);
-    tank_water_set_gradient(water, init_top_c, init_bot_c);
-
-    lv_obj_t *div = lv_obj_create(water);
-    lv_obj_set_size(div, 56, 1);
-    lv_obj_align(div, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(div, lv_color_hex(0x808080), 0);
-    lv_obj_set_style_bg_opa(div, LV_OPA_20, 0);
-    lv_obj_set_style_border_width(div, 0, 0);
-    lv_obj_clear_flag(div, LV_OBJ_FLAG_SCROLLABLE);
+    ui_tank_create(right_container);
 
     // ------------------- ON/OFF BUTTON--------------------------
     lv_obj_t *pwr_btn = lv_btn_create(tile);
@@ -211,7 +141,8 @@ void ui_main_create(lv_obj_t *tile)
 
     lv_obj_add_event_cb(pwr_btn, on_power_tapped, LV_EVENT_CLICKED, NULL);
 
-    tank_water_gradient = water;
+
+    // ----------- Create the main timer for updating the UI --------------------
     lv_timer_create(main_status_timer_cb, 1000, NULL); // 1Hz UI update
 }
 
@@ -223,48 +154,10 @@ static void main_status_timer_cb(lv_timer_t *t)
 {
     LV_UNUSED(t);
 
-    // if (!tank_water_gradient || !labl_tank_top || !labl_tank_bottom) return;
-
-    if (tank_water_gradient && labl_tank_top && labl_tank_bottom)
-    {
-        int16_t top_centiC = nilan_get_tank_top_cC();
-        int16_t bottom_centiC = nilan_get_tank_bottom_cC();
-
-        int16_t top_C = (int16_t)(((int32_t)top_centiC * 5243) >> 19);
-        int16_t bottom_C = (int16_t)(((int32_t)bottom_centiC * 5243) >> 19);
-
-        static int16_t last_top_C = INT16_MIN;
-        static int16_t last_bottom_C = INT16_MIN;
-
-        if (top_C != last_top_C || bottom_C != last_bottom_C)
-        {
-
-            last_top_C = top_C;
-            last_bottom_C = bottom_C;
-
-            set_label_temp(labl_tank_top, top_C);
-            set_label_temp(labl_tank_bottom, bottom_C);
-            tank_water_set_gradient(tank_water_gradient, top_C, bottom_C);
-        }
-    }
-
-    wifi_strength_t strength = wifi_sta_get_signal_strength();
-//    wifi_icon_set_level(strength);
-    ui_top_bar_update_wifi(strength);
-
-    // Update clock label from system time (NTP-synced)
-    time_t now;
-    time(&now);
-    struct tm timeinfo;
-    localtime_r(&now, &timeinfo);
-
-    char time_buf[6];  // "HH:MM\0"
-    strftime(time_buf, sizeof(time_buf), "%H:%M", &timeinfo);
-
-    lv_label_set_text(labl_time, time_buf);
+    ui_tank_update();
+    ui_top_bar_update();
 
 }
-
 
 // ===============================================================
 // HELPERS
@@ -276,48 +169,6 @@ static inline void set_label_u8(lv_obj_t *label, int v)
     lv_snprintf(b, sizeof(b), "%d", v);
     lv_label_set_text(label, b);
 }
-
-static inline void set_label_temp(lv_obj_t *label, int t_c)
-{
-    char b[8];
-    lv_snprintf(b, sizeof(b), "%d°", t_c);
-    lv_label_set_text(label, b);
-}
-
-static uint32_t lerp_rgb(uint32_t a, uint32_t b, uint8_t t)
-{
-    uint8_t ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
-    uint8_t br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
-
-    uint8_t r = (uint8_t)(ar + (((int)br - ar) * t) / 255);
-    uint8_t g = (uint8_t)(ag + (((int)bg - ag) * t) / 255);
-    uint8_t bch = (uint8_t)(ab + (((int)bb - ab) * t) / 255);
-
-    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | bch;
-}
-
-static uint32_t temp_to_warm_color(int t_c)
-{
-    if (t_c < 20) t_c = 20;
-    if (t_c > 60) t_c = 60;
-
-    uint32_t cool = 0x234F93;
-    uint32_t warm = 0xB86316;
-    uint8_t k = (uint8_t)((t_c - 20) * 255 / 40);
-    return lerp_rgb(cool, warm, k);
-}
-
-static void tank_water_set_gradient(lv_obj_t *water, int top_c, int bot_c)
-{
-    uint32_t top_col = temp_to_warm_color(top_c);
-    uint32_t bot_col = temp_to_warm_color(bot_c);
-
-    lv_obj_set_style_bg_color(water, lv_color_hex(top_col), 0);
-    lv_obj_set_style_bg_grad_color(water, lv_color_hex(bot_col), 0);
-    lv_obj_set_style_bg_grad_dir(water, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_bg_opa(water, LV_OPA_COVER, 0);
-}
-
 
 
 // ======================================================
@@ -525,5 +376,3 @@ static void fan_free_event_cb(lv_event_t *e)
     fan_draw_cfg_t *cfg = (fan_draw_cfg_t *)lv_event_get_user_data(e);
     if (cfg) lv_free(cfg);
 }
-
-

@@ -2,13 +2,12 @@
 #include "lvgl.h"
 #include "../UI_Shared_Colors.h"
 #include "../../wifi_sta.h"
+#include <time.h>
 
-// ---------- Static objects ----------
-//static lv_obj_t *top_bar = NULL;
 lv_obj_t *labl_time = NULL;  // global for timer access
 
-static lv_color_t wifi_bar_on_color;
-static lv_color_t wifi_bar_off_color;
+lv_color_t wifi_bar_on_color;
+lv_color_t wifi_bar_off_color;
 
 // Wifi icon struct
 typedef struct {
@@ -19,16 +18,14 @@ typedef struct {
 
 static wifi_icon_t wifi_icon = {0};
 
-// ---------- Prototypes (internal) ----------
+// Prototypes
 void wifi_icon_create(lv_obj_t *parent, int right_margin, uint32_t inactive_hex);
-//static void wifi_icon_set_level(wifi_strength_t strength);
+void update_wifi_icon();
+void update_clock();
 
-
-
-// ---------- Public: Create top bar ----------
+// Function for creating the top bar at boot.
 void ui_top_bar_create(lv_obj_t *parent)
 {
-
     lv_obj_t *top = lv_obj_create(parent);
     lv_obj_set_size(top, 320, 32);
     lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
@@ -57,7 +54,8 @@ void ui_top_bar_create(lv_obj_t *parent)
     wifi_bar_off_color = lv_color_hex(COL_WIFI_BAR_OFF);
     lv_obj_set_style_pad_all(top, 0, 0);
     wifi_icon_create(top, 20, COL_WIFI_BAR_OFF); // right margin 20, inactive color
-    ui_top_bar_update_wifi(wifi_sta_get_signal_strength());
+    //ui_top_bar_update_wifi(wifi_sta_get_signal_strength());
+    update_wifi_icon();
 }
 
 
@@ -100,8 +98,10 @@ void wifi_icon_create(lv_obj_t *parent, int right_margin, uint32_t inactive_hex)
     }
 }
 
-void ui_top_bar_update_wifi(wifi_strength_t strength)
+void update_wifi_icon()
 {
+    // Update wifi strength, and set its icon if change is necessary.
+    wifi_strength_t strength = wifi_sta_get_signal_strength();
     if (wifi_icon.last_level == strength) return;
 
     for (int i = 0; i < 4; i++) 
@@ -109,8 +109,40 @@ void ui_top_bar_update_wifi(wifi_strength_t strength)
         lv_color_t bar_color = (i < strength) ? wifi_bar_on_color : wifi_bar_off_color;
         lv_obj_set_style_bg_color(wifi_icon.bar[i], bar_color, 0);
     }
-
     wifi_icon.last_level = strength;
+
+}
+
+void update_clock()
+{
+    // Next, update the clock from RTC.
+    time_t now;
+    time(&now);
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+
+    char time_buf[6]; // "HH:MM\0"
+    strftime(time_buf, sizeof(time_buf), "%H:%M", &timeinfo);
+
+    lv_label_set_text(labl_time, time_buf);
+}
+
+
+void ui_top_bar_update()
+{
+    update_wifi_icon();
+    update_clock();
+
+    // // Next, update the clock from RTC.
+    // time_t now;
+    // time(&now);
+    // struct tm timeinfo;
+    // localtime_r(&now, &timeinfo);
+
+    // char time_buf[6]; // "HH:MM\0"
+    // strftime(time_buf, sizeof(time_buf), "%H:%M", &timeinfo);
+
+    // lv_label_set_text(labl_time, time_buf);
 }
 
 

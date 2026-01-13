@@ -6,7 +6,7 @@
 #include "RTC.h"
 #include "UI/UI.h"
 
-#include "nilan_modbus.h"
+#include "Nilan_Modbus.h"
 #include "wifi_sta.h"
 
 #include "bsp/esp-bsp.h"

@@ -1,4 +1,4 @@
-#include "nilan_modbus.h"
+#include "Nilan_Modbus.h"
 
 #include <string.h>
 
@@ -15,7 +15,7 @@
 
 #include "CRC16.h"
 
-#include "NilanRegisters.h"
+#include "Nilan_Registers.h"
 
 // static const char *TAG = "nilan_modbus";
 

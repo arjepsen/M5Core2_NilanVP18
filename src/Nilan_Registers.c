@@ -1,6 +1,4 @@
-
-
-#include "NilanRegisters.h"
+#include "Nilan_Registers.h"
 
 #define NILAN_MAX_REG_ADDR 2002 // Largest register address in nilan_registers
 
