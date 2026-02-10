@@ -42,7 +42,6 @@ void ui_tank_create(lv_obj_t *parent)
     // Create a "wrapper" for the tank icon
     lv_obj_t *tank_wrap = lv_obj_create(parent);
     lv_obj_set_size(tank_wrap, TANK_WRAP_WIDTH, TANK_WRAP_HEIGHT);
-    //lv_obj_align(tank_wrap, LV_ALIGN_CENTER, 0, 0);
     lv_obj_center(tank_wrap);
     lv_obj_set_style_bg_opa(tank_wrap, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tank_wrap, 0, 0);
@@ -51,7 +50,6 @@ void ui_tank_create(lv_obj_t *parent)
     // Create the outline of the tank - rounded rectangle.
     lv_obj_t *tank_outline = lv_obj_create(tank_wrap);
     lv_obj_set_size(tank_outline, TANK_OUTLINE_WIDTH, TANK_OUTLINE_HEIGHT);
-    //lv_obj_align(tank_outline, LV_ALIGN_CENTER, 0, 0);
     lv_obj_center(tank_outline);
     lv_obj_clear_flag(tank_outline, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(tank_outline, 14, 0);
@@ -62,7 +60,6 @@ void ui_tank_create(lv_obj_t *parent)
 
     // Create the temperature-gradient inside the outline
     tank_water_gradient = lv_obj_create(tank_outline);
-    //lv_obj_set_size(tank_water_gradient, 76, 126);
     lv_obj_set_size(tank_water_gradient, TANK_GRADIENT_WIDTH, TANK_GRADIENT_HEIGHT);
     lv_obj_center(tank_water_gradient);
     lv_obj_clear_flag(tank_water_gradient, LV_OBJ_FLAG_SCROLLABLE);
