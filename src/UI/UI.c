@@ -4,7 +4,7 @@
 #include "lvgl.h"
 
 #include "UI/UI_Main/UI_Main.h"
-#include "UI/ui_modbus_debug.h"
+#include "UI/UI_InputList/UI_InputList.h"
 
 static lv_obj_t *tileview_obj = NULL;
 
@@ -28,7 +28,7 @@ void ui_init()
     ui_main_create(t0);
 
     // Screen 2: Modbus / Nilan debug UI
-    ui_modbus_debug_create(t1);
+    UI_InputList_init(t1);
 
     // Screen 3: simple placeholder for now
     lv_obj_set_style_bg_color(t2, lv_color_hex(0x202020), 0);

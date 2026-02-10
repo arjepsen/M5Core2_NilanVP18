@@ -2,6 +2,7 @@
 #define NILAN_REGISTERS_H
 
 #include <stdint.h>
+#include <stdio.h>
 
 /**
  * One array holds all metadata - this goes to flash.
@@ -18,7 +19,7 @@ static const char *control_states[] = {
     "Ventilation", "Heating", "Cooling", "Hot Water",
     "Legionella", "Cooling + hot water", "Central Heating",
     "Defrost", "Frost secure", "Service", "Alarm",
-    "Heatin + hot water"};
+    "Heating + hot water"};
 
 // static const char *alarm_list[] = {
 //     "None", "Hardware", "Timeout", "Fire", "Pressure",
@@ -330,6 +331,7 @@ void nilan_update_state_range(uint8_t reg_type,
                               const uint16_t *regs,
                               uint32_t timestamp_ms);
 
+void nilan_format_reg(nilan_reg_id_t id, char *buf, size_t len);
 
 // Init lookup tables
 void nilan_registers_init();

@@ -290,7 +290,7 @@ bool nilan_modbus_start(void)
 }
 
 // Has the module seen at least one valid reply recently?
-bool nilan_modbus_is_online(void)
+bool nilan_modbus_is_online()
 {
     uint32_t last = last_ok_ms;
     if (last == 0)
@@ -310,9 +310,14 @@ int16_t nilan_get_tank_top_cC()
     return nilan_reg_state[NILAN_REGID_IR_T11_TANK_TOP].raw;
 }
 
-int16_t nilan_get_tank_bottom_cC(void)
+int16_t nilan_get_tank_bottom_cC()
 {
     return nilan_reg_state[NILAN_REGID_IR_T12_TANK_BOTTOM].raw;
+}
+
+int16_t nilan_get_control_mode()
+{
+    return nilan_reg_state[NILAN_REGID_IR_CONTROL_MODE].raw;
 }
 
 // Extra debug helpers

@@ -1,4 +1,6 @@
 #include "Nilan_Registers.h"
+#include <stdbool.h>
+#include <stdio.h>
 
 #define NILAN_MAX_REG_ADDR 2002 // Largest register address in nilan_registers
 
@@ -7,6 +9,8 @@ static uint16_t input_map[NILAN_MAX_REG_ADDR + 1];
 static uint16_t holding_map[NILAN_MAX_REG_ADDR + 1];
 
 nilan_reg_state_t nilan_reg_state[NILAN_REGID_COUNT] = {0};
+
+static void format_alarm_status(uint16_t raw, char *buf, size_t len);
 
 void nilan_update_state_range(uint8_t reg_type,
                               uint16_t start_addr,
@@ -475,3 +479,91 @@ const nilan_reg_meta_t nilan_registers[NILAN_REGID_COUNT] = {
                                        .data_type = NILAN_DTYPE_ENUM16, // 0=Closed,1=Open,2=No OFF
                                        .name = "User menu open"},
 };
+
+// Bitmask decoder for alarm status (0x80 active, 0x03 count)
+static void format_alarm_status(uint16_t raw, char *buf, size_t len)
+{
+    bool active = raw & 0x80;
+    uint8_t count = raw & 0x03;
+    snprintf(buf, len, "%s alarms: %u", active ? "Active" : "No active", count);
+}
+
+// Main formatter
+void nilan_format_reg(nilan_reg_id_t id, char *buf, size_t len)
+{
+    if (!nilan_reg_state[id].valid)
+    {
+        snprintf(buf, len, "Invalid");
+        return;
+    }
+    uint16_t raw = nilan_reg_state[id].raw;
+
+    switch (nilan_registers[id].data_type) // Assuming meta has .type
+    {
+        case NILAN_DTYPE_TEMP_Cx100:
+            snprintf(buf, len, "%.1f °C", (int16_t)raw / 100.0f);
+            break;
+        case NILAN_DTYPE_UINT16:
+        case NILAN_DTYPE_INT16:
+            snprintf(buf, len, "%d", (int16_t)raw); // Signed if needed
+            break;
+        case NILAN_DTYPE_ENUM16:
+            if ((id == NILAN_REGID_IR_CONTROL_MODE) &&
+                (raw < sizeof(control_modes) / sizeof(char *)))
+            {
+                snprintf(buf, len, "%s (%u)", control_modes[raw], raw);
+            }
+            else if ((id == NILAN_REGID_IR_CONTROL_STATE) && 
+                     (raw < sizeof(control_states) / sizeof(char *)))
+            {
+                snprintf(buf, len, "%s (%u)", control_states[raw], raw);
+            }
+            else
+            {
+                snprintf(buf, len, "%u", raw); // Fallback
+            }
+            break;
+        default:
+            snprintf(buf, len, "%u", raw);
+    }
+    
+    // Special cases
+    if (id == NILAN_REGID_IR_ALARM_STATUS)
+    {
+        format_alarm_status(raw, buf, len);
+    }
+    else if (id >= NILAN_REGID_IR_ALARM_LIST1_ID && id <= NILAN_REGID_IR_ALARM_LIST3_TIME)
+    {
+        // Decode ID/date/time as per docs (DOS format)
+        if ((id - NILAN_REGID_IR_ALARM_LIST1_ID) % 3 == 0)
+        { // ID
+            uint8_t code = raw & 0x7F;
+            snprintf(buf, len, "Code: %u", code);
+        }
+        else if ((id - NILAN_REGID_IR_ALARM_LIST1_DATE) % 3 == 0)
+        { // Date
+            uint16_t year = 1980 + (raw >> 9);
+            uint8_t month = (raw >> 5) & 0x0F;
+            uint8_t day = raw & 0x1F;
+            snprintf(buf, len, "%04u-%02u-%02u", year, month, day);
+        }
+        else
+        { // Time
+            uint8_t hour = raw >> 11;
+            uint8_t min = (raw >> 5) & 0x3F;
+            uint8_t sec = (raw & 0x1F) * 2;
+            snprintf(buf, len, "%02u:%02u:%02u", hour, min, sec);
+        }
+    }
+    else if (id == NILAN_REGID_IR_HUMIDITY)
+    {
+        snprintf(buf, len, "%.1f %%", raw / 100.0f);
+    }
+    else if (id >= NILAN_REGID_IR_APP_VERSION_MAJOR && id <= NILAN_REGID_IR_APP_VERSION_RELEASE)
+    {
+        // ASCII text (2 chars)
+        char c1 = raw >> 8;
+        char c2 = raw & 0xFF;
+        snprintf(buf, len, "%c%c", c1, c2);
+    }
+}

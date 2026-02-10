@@ -127,6 +127,10 @@ void update_clock()
     lv_label_set_text(labl_time, time_buf);
 }
 
+void update_mode()
+{
+    
+}
 
 void ui_top_bar_update()
 {
